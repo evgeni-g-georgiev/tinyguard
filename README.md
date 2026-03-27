@@ -153,11 +153,11 @@ Each clip is processed one-at-a-time, simulating real-time streaming. The thresh
 
 **Timeline plot** — anomaly scores over time for each node, with threshold and phase annotations:
 
-![Deployment timeline](outputs/deployment_simulation/deployment_timeline.png)
+![Deployment timeline](figures/deployment_timeline.png)
 
 **Score distributions** — separation between normal and anomaly scores during monitoring:
 
-![Score distributions](outputs/deployment_simulation/deployment_distributions.png)
+![Score distributions](figures/deployment_distributions.png)
 
 ### Interpretation
 
@@ -204,7 +204,7 @@ When trained on all available normal clips (hundreds per machine, rather than th
 
 f\_s improves 12 of 16 machines, with the largest gains on machines where f\_c features alone are weakest (slider/id\_04: +0.234, pump/id\_06: +0.236). The few regressions (fan/id\_02, pump/id\_00) are cases where f\_c features were already near-optimal and the 8D projection marginally loses information.
 
-![SVDD evaluation results](outputs/fs_simulation/fs_results.png)
+![SVDD evaluation results](figures/fs_results.png)
 
 ---
 
@@ -286,7 +286,7 @@ Friend/foe classification was auto-calibrated using Youden's J statistic on prot
 | SVDD + foe-push | 0.790 | -0.038 | Yes (fine-tuned) |
 | Fisher-weighted scoring | 0.811 | -0.016 | No |
 
-![Node learning comparison](outputs/node_learning/node_learning_results.png)
+![Node learning comparison](figures/node_learning_results.png)
 
 **Conclusion:** All three node learning approaches degraded performance. The progression from -0.164 to -0.038 to -0.016 shows that *less intervention is better*: the best result came from not touching the SVDD weights at all. The SVDD baseline at 0.828 AUC with 128 parameters and a 2-minute cold start is the strong result. Node learning's current value is in the **communication infrastructure** (BLE prototype exchange, gating protocol) rather than immediate AUC gains.
 
