@@ -6,6 +6,7 @@ __pycache__/
 
 # Virtual environment
 proj_env/
+group_env/
 
 # Claude
 .claude/
@@ -13,9 +14,13 @@ proj_env/
 # Outputs (regeneratable)
 outputs/
 
+# Model weights (downloaded, not tracked)
+models/
+
 # OS
 .DS_Store
 
 # IDE
 .vscode/
 .idea/
+/data/

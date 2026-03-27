@@ -7,3 +7,4 @@ matplotlib
 pyyaml
 tqdm
 soundfile
+ai-edge-litert

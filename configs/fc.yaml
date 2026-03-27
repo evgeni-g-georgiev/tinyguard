@@ -1,27 +1,29 @@
 # =============================================================================
 # f_c encoder training configuration
+# Training objective: Supervised Contrastive Learning with machine IDs
+# Reference: Khosla et al. "Supervised Contrastive Learning" NeurIPS 2020
+#            https://arxiv.org/abs/2004.11362
 # =============================================================================
 
-# Audio processing (applied to raw WAV → mel-spectrogram)
 audio:
   sample_rate: 16000
   n_fft: 1024
   hop_length: 256
   n_mels: 64
-  window_frames: 64        # frames per window (~1 second)
-  power: 2.0               # power spectrogram
-  log_offset: 1.0e-6       # offset before log compression
+  window_frames: 64        # ~1 second at 16kHz with hop=256
+  power: 2.0
+  log_offset: 1.0e-6       # added before log compression
 
-# Data
 data:
   root: data/
-  machine_types: [fan, pump, valve, slider]
-  train_split: 0.8          # fraction of normal data for training
+  # Machines used to train f_c. Held-out machines test cross-type generalisation.
+  train_machine_types: [fan, pump, slider]
+  eval_machine_types:  [valve]
+  train_split: 0.8         # fraction of normal clips used for training
 
-# Encoder architecture
 model:
-  encoder: conv             # "conv" or "tcn"
-  embedding_dim: 16
+  encoder: conv            # "conv" or "tcn"
+  embedding_dim: 16        # deployment embedding size
 
   conv:
     channels: [1, 8, 16, 32]
@@ -33,36 +35,39 @@ model:
     num_layers: 3
     kernel_size: 3
 
-  # Projection head (used during contrastive training only, discarded for deployment)
+  # Projection head maps embeddings to contrastive space during training only.
+  # Following Khosla et al. recommendation: discard after training; use encoder
+  # embeddings directly at deployment.
   projection:
     hidden_dim: 64
     output_dim: 32
 
-# Contrastive learning
 contrastive:
-  temperature: 0.1
+  temperature: 0.07        # SupCon uses lower temperature than SimCLR (0.1)
 
-# Spectrogram augmentations for contrastive views
 augmentations:
   time_mask_max_frames: 10
-  freq_mask_max_bins: 8
-  noise_snr_db: [20, 40]     # uniform range for additive Gaussian noise
-  gain_db: [-6, 6]           # uniform range for random gain
+  # Reduced from 8 → 4: large frequency masking erases the spectral fingerprint
+  # the model must learn to distinguish machines. Smaller masks preserve structure.
+  freq_mask_max_bins: 4
+  noise_snr_db: [20, 40]
+  gain_db: [-6, 6]
   time_roll_max_frames: 10
+  # Log-mixup-exp: mix samples in linear mel space then return to log scale.
+  # Forces encoder to be sensitive to high-frequency spectral detail where
+  # industrial anomalies (bearing faults, valve leaks) manifest.
+  # Reference: "Contrastive Learning with Spectrum Information Augmentation"
+  #            arXiv:2509.15570
+  log_mixup_alpha: 0.4
 
-# Training
 training:
   batch_size: 256
   epochs: 100
   learning_rate: 0.001
   weight_decay: 0.0001
-  lr_scheduler:
-    patience: 10
-    factor: 0.5
-  early_stopping:
-    patience: 20
+  warmup_epochs: 5         # linear LR warm-up before cosine decay
+  early_stopping_patience: 20
   num_workers: 4
 
-# Evaluation
 evaluation:
-  n_prototypes: 1           # 1 = single centroid, >1 = k-means clusters
+  n_prototypes: 1          # 1 = single centroid per machine
