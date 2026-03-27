@@ -1,0 +1,68 @@
+# =============================================================================
+# f_c encoder training configuration
+# =============================================================================
+
+# Audio processing (applied to raw WAV → mel-spectrogram)
+audio:
+  sample_rate: 16000
+  n_fft: 1024
+  hop_length: 256
+  n_mels: 64
+  window_frames: 64        # frames per window (~1 second)
+  power: 2.0               # power spectrogram
+  log_offset: 1.0e-6       # offset before log compression
+
+# Data
+data:
+  root: data/
+  machine_types: [fan, pump, valve, slider]
+  train_split: 0.8          # fraction of normal data for training
+
+# Encoder architecture
+model:
+  encoder: conv             # "conv" or "tcn"
+  embedding_dim: 16
+
+  conv:
+    channels: [1, 8, 16, 32]
+    kernel_size: 3
+    stride: 2
+
+  tcn:
+    hidden_channels: 16
+    num_layers: 3
+    kernel_size: 3
+
+  # Projection head (used during contrastive training only, discarded for deployment)
+  projection:
+    hidden_dim: 64
+    output_dim: 32
+
+# Contrastive learning
+contrastive:
+  temperature: 0.1
+
+# Spectrogram augmentations for contrastive views
+augmentations:
+  time_mask_max_frames: 10
+  freq_mask_max_bins: 8
+  noise_snr_db: [20, 40]     # uniform range for additive Gaussian noise
+  gain_db: [-6, 6]           # uniform range for random gain
+  time_roll_max_frames: 10
+
+# Training
+training:
+  batch_size: 256
+  epochs: 100
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  lr_scheduler:
+    patience: 10
+    factor: 0.5
+  early_stopping:
+    patience: 20
+  num_workers: 4
+
+# Evaluation
+evaluation:
+  n_prototypes: 1           # 1 = single centroid, >1 = k-means clusters

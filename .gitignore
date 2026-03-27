@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Virtual environment
+proj_env/
+
+# Claude
+.claude/
+
+# Outputs (regeneratable)
+outputs/
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
