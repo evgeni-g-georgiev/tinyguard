@@ -1,20 +1,21 @@
 # TinyML Anomalous Sound Detection
 
-Decentralised anomalous sound detection for factory machinery, designed to run entirely on **Arduino Nano 33 BLE** microcontrollers (256 KB SRAM, 1 MB flash).
+Zero-shot anomalous sound detection for factory machinery, running entirely on an **Arduino Nano 33 BLE** microcontroller (2 MB flash, 756 KB SRAM).
 
-A node powers on near a machine, listens to 2 minutes of normal operation, and learns to detect anomalies — with no internet connection, no cloud, and no prior knowledge of the machine type. The entire learned model fits in **548 bytes**.
+A node is placed next to a machine, listens for **10 minutes of normal operation**, trains a tiny anomaly detector on-device, and then continuously monitors for faults — with no internet connection, no cloud, and no prior knowledge of the specific machine type.
+
+---
 
 ## Table of Contents
 
 - [How It Works](#how-it-works)
-- [Pipeline Overview](#pipeline-overview)
-- [Stage 1: Feature Extraction (f\_c)](#stage-1-feature-extraction-f_c)
-- [Stage 2: On-Device Separator (f\_s) — Deep SVDD](#stage-2-on-device-separator-f_s--deep-svdd)
+- [System Architecture](#system-architecture)
+- [Offline Training Pipeline](#offline-training-pipeline)
+- [On-Device Pipeline](#on-device-pipeline)
+- [Evaluation Protocol](#evaluation-protocol)
+- [Baseline Results](#baseline-results)
 - [Deployment Simulation](#deployment-simulation)
-- [Full Evaluation Results](#full-evaluation-results)
 - [Memory Budget](#memory-budget)
-- [Node Learning Experiments](#node-learning-experiments)
-- [Next Steps](#next-steps)
 - [Repository Structure](#repository-structure)
 - [Running the Code](#running-the-code)
 
@@ -22,321 +23,318 @@ A node powers on near a machine, listens to 2 minutes of normal operation, and l
 
 ## How It Works
 
-The system answers one question: **"Does this machine sound normal?"**
+The system answers one question: **"Does this machine sound normal right now?"**
 
-Each node operates independently. There is no training dataset, no labelled anomalies, and no pre-programming for specific machine types. A node deployed next to a fan learns what fans sound like. The same hardware deployed next to a pump learns what pumps sound like. The model has **zero knowledge of MIMII machine types** — it learns purely from the statistical structure of whatever audio it hears during its training phase.
+Each node operates independently. There is no training dataset of anomalies, no labels, and no pre-programming for specific machine types. A node placed next to a fan learns what _that fan_ sounds like. The same hardware placed next to a pump learns what _that pump_ sounds like. The model has **zero knowledge of MIMII machine types** — it learns purely from the audio it hears during its 10-minute training window.
 
-This is possible because anomaly detection is a **one-class problem**: the model only needs to learn the distribution of normal sounds, then flag anything that deviates from that distribution. It never sees or requires anomaly examples during training.
+This is possible because anomaly detection is a **one-class problem**: the model only needs to learn the statistical distribution of normal sounds, then flag anything that deviates significantly. It never sees or requires anomaly examples.
 
-**Deployment in 3 phases:**
+**Three on-device phases:**
 
-1. **Training (2 minutes):** The node records 12 audio clips (10s each), extracts embeddings via YAMNet, and trains a tiny neural network (128 parameters) to map these embeddings to a compact space centred around a learned centroid. It sets an anomaly threshold at the 95th percentile of training scores.
+1. **Training (10 minutes):** The node records 60 audio clips (10 s each), extracts 32-dimensional embeddings via the on-device CNN, and trains a small two-layer network (1,312 parameters) to map these embeddings toward a fixed hypersphere centroid. The anomaly threshold is set at the 95th percentile of training scores.
 
-2. **Monitoring:** The node continuously records 10-second clips, scores each one by its distance from the centroid in the learned space, and raises an alert if the score exceeds the threshold.
+2. **Normal monitoring:** The node continuously scores new 10-second clips by their squared distance from the centroid. Scores below the threshold are classified as normal.
 
-3. **Peer exchange (optional):** When two nodes are within BLE range, they can exchange prototype vectors (544 bytes) to refine their scoring. See [Node Learning Experiments](#node-learning-experiments).
-
-**Why this works on new, unseen machines:** YAMNet (the frozen feature extractor) was trained on AudioSet — a general audio corpus of 2 million clips spanning 521 sound classes. It produces rich, general-purpose audio features. The on-device model (f\_s) then learns machine-specific structure from these features in just 2 minutes. Neither f\_s nor the PCA projection have ever seen the specific machine before deployment. The PCA transform is fitted on normal clips from the MIMII dataset, but PCA is unsupervised — it captures directions of maximum variance in general machine audio, not specific machine identities. A new machine type would still project meaningfully as long as it is industrial machinery (which is the deployment target).
+3. **Anomaly monitoring:** When a fault develops, embeddings drift away from the centroid. Scores exceed the threshold and an alert is raised.
 
 ---
 
-## Pipeline Overview
+## System Architecture
+
+The pipeline has two components: a frozen **feature extractor** (f\_c) — a CNN distilled from YAMNet — and a trainable **anomaly detector** (f\_s) — a two-layer Deep SVDD network trained on-device.
 
 ```
-                         FROZEN (pre-loaded in flash)              TRAINED ON-DEVICE
-                    ┌──────────────────────────────────┐    ┌──────────────────────────┐
-                    │                                  │    │                          │
-  Audio (16kHz) ──► │  YAMNet  ──►  PCA (1024→16)     │──► │  f_s (16→8)  ──►  Score  │──► Alert?
-  10s clip          │  (1024D)      91.7% variance     │    │  Deep SVDD      ||x-c||² │
-                    │               retained           │    │  128 params     > thresh? │
-                    └──────────────────────────────────┘    └──────────────────────────┘
-                          ~249 KB flash                           548 bytes SRAM
+                         FROZEN (pre-loaded in flash)             TRAINED ON-DEVICE
+                    ──────────────────────────────────────    ────────────────────────────
+                    │                                    │    │                          │
+  Audio (16 kHz) ──► AcousticEncoder (f_c)              ├───► FsSeparator (f_s)         │
+  10 s clip          MobileNet V1-style DSC CNN          │    Deep SVDD 32→32→8          │
+                     Input: (1, 64, 61) log-mel          │    score = max ||f_s(x)−c||²  ├──► Alert?
+                     Output: (1, 32) embedding           │    threshold @ 95th pct       │
+                     ~554K params, ~562 KB INT8          │    1,312 params, ~5 KB        │
+                    ──────────────────────────────────────    ────────────────────────────
 ```
 
-The pipeline has two stages: a **frozen feature extractor** (f\_c) that converts raw audio to compact embeddings, and a **trainable separator** (f\_s) that learns machine-specific anomaly detection from those embeddings.
+**Why a distilled CNN and not YAMNet directly?**
+
+YAMNet is a 4 MB float32 model — far too large for the Arduino's 2 MB flash. Instead, we train a compact MobileNet V1-style CNN (AcousticEncoder) to reproduce YAMNet's embeddings using knowledge distillation on FSD50K. The CNN is then quantised to INT8, giving a ~562 KB model that fits comfortably in flash. On-device, the CNN replaces YAMNet entirely: raw audio goes in, 32D embeddings come out.
 
 ---
 
-## Stage 1: Feature Extraction (f\_c)
+## Offline Training Pipeline
 
-**Model:** YAMNet (Google MediaPipe, TFLite float32)
-- Trained on AudioSet (2M clips, 521 classes) — general audio, not MIMII-specific
-- Processes 0.975s frames (15,600 samples at 16 kHz)
-- Each 10s clip yields ~10 frames, each producing a 1024-dimensional embedding
-- Frames are mean-pooled to produce one 1024D vector per clip
+The offline pipeline runs once on a server/GPU to produce the frozen AcousticEncoder weights that are pre-loaded onto every Arduino. MIMII data is **never used** in this pipeline — it is reserved entirely for evaluation.
 
-**PCA projection (1024 → 16 dimensions):**
-- Fitted on normal clips only (unsupervised — no labels used)
-- Retains 91.7% of variance in 16 components
-- Reduces the per-clip representation from 4,096 bytes to 64 bytes
-- The PCA transform (components matrix + mean vector) is pre-computed offline and stored in flash
+```
+FSD50K audio ──► [1] YAMNet (4 MB, float32)  ──► 1024D embeddings (N_frames × 1024)
+                 [2] PCA (32 components)       ──► 32D targets     (N_frames × 32)
+                 [3] AcousticEncoder training  ──► acoustic_encoder.pt
+                     MSE(student, PCA targets)
+```
 
-**f\_c-only baseline:** Using just centroid distance in the 16D PCA space gives a mean AUC of **0.754** across all 16 MIMII machines. This confirms YAMNet features carry meaningful anomaly signal even without any learned projection.
+### Step 1 — Teacher Preparation (`prepare_teacher.py`)
+
+Runs the YAMNet TFLite model (float32) over every clip in the **FSD50K eval set** to extract 1024-dimensional audio embeddings. Each 10-second clip is sliced into 0.975 s frames (15,600 samples at 16 kHz); YAMNet processes each frame independently.
+
+Then fits **PCA(32 components)** on the resulting embeddings:
+
+- PCA is fitted on FSD50K only — never on MIMII. Fitting on MIMII would be data leakage since MIMII is the evaluation set.
+- 32 components explain the dominant directions of variance in general machine audio.
+- The PCA components matrix (32 × 1024, 128 KB) and mean vector (1024D, 4 KB) are saved and will be used during student training. They are **not needed on-device** — the student learns to output 32D embeddings directly.
+
+**Output:** `outputs/fsd50k_cache/eval_embeddings.npy` (N × 1024), `outputs/pca/pca_components.npy` (32 × 1024), `outputs/pca/pca_mean.npy` (1024,)
+
+### Step 2 — Mel Spectrogram Cache (`prepare_mels.py`)
+
+Computes log-mel spectrograms for every FSD50K frame in the same order as Step 1, so frame index `i` in the mel cache corresponds exactly to frame index `i` in the embedding cache.
+
+Each frame → `(1, 64, 61)` log-mel spectrogram (64 mel bins, 61 time steps, single channel):
+
+```python
+mel = librosa.feature.melspectrogram(frame, sr=16000, n_fft=1024, hop_length=256, n_mels=64)
+log_mel = log(mel + 1e-6)    # (64, 61), then add channel dim → (1, 64, 61)
+```
+
+**Output:** `outputs/fsd50k_cache/eval_mels.npy` (N × 1 × 64 × 61, ~1.5 GB)
+
+### Step 3 — Student Distillation (`train_student.py`)
+
+Trains **AcousticEncoder** (the on-device CNN) to reproduce the PCA-projected YAMNet embeddings via mean-squared error:
+
+```
+Loss = MSE(AcousticEncoder(mel), PCA_project(YAMNet_embed))
+```
+
+- Optimiser: AdamW, lr=1e-3, weight decay=1e-4
+- Schedule: CosineAnnealingLR over 50 epochs
+- Batch size: 256, 90/10 train/val split
+- Best checkpoint saved by validation MSE
+
+The student never sees MIMII. It learns to map log-mel spectrograms to the same 32D space that YAMNet+PCA maps audio to — a general-purpose audio feature space that captures acoustic structure useful for anomaly detection.
+
+**Output:** `outputs/student/acoustic_encoder.pt`, `outputs/student/training_curve.png`
+
+![AcousticEncoder training curve](figures/training_curve.png)
 
 ---
 
-## Stage 2: On-Device Separator (f\_s) — Deep SVDD
+## On-Device Pipeline
 
-The separator is a single-layer neural network that projects 16D embeddings into an 8D space optimised for anomaly scoring, based on [Deep SVDD (Ruff et al., ICML 2018)](https://proceedings.mlr.press/v80/ruff18a.html).
+Once flashed, the Arduino runs two models end-to-end on raw microphone audio.
 
-### Architecture
+### Feature Extraction: AcousticEncoder (f\_c)
+
+A MobileNet V1-style depthwise-separable CNN that converts log-mel spectrograms to 32-dimensional embeddings.
+
+**Architecture:**
 
 ```
-f_s(x) = ReLU(W @ x)       W ∈ R^{8×16}, no bias
+Input: (1, 1, 64, 61) log-mel spectrogram  ← 0.975 s audio frame
 
-Parameters: 128 (W) + 8 (centroid c) = 136 stored values = 544 bytes
+Stem:   Conv2d(1→32, 3×3, stride=2) + BN + ReLU        → (1, 32, 32, 31)
+B1:     DW(32, stride=2) + BN + ReLU                    → (1, 32, 16, 16)  ← SRAM peak
+        PW(32→64)        + BN + ReLU                    → (1, 64, 16, 16)
+B2:     DW(64, stride=2) + BN + ReLU                    → (1, 64,  8,  8)
+        PW(64→128)       + BN + ReLU                    → (1,128,  8,  8)
+B3:     DW(128, stride=1) + PW(128→128)                 → (1,128,  8,  8)
+B4:     DW(128, stride=2) + PW(128→256)                 → (1,256,  4,  4)
+B5:     DW(256, stride=1) + PW(256→256)                 → (1,256,  4,  4)
+B6:     DW(256, stride=2) + PW(256→512)                 → (1,512,  2,  2)
+B7:     DW(512, stride=1) + PW(512→512)                 → (1,512,  2,  2)
+Pool:   AdaptiveAvgPool2d(1)                             → (1,512,  1,  1)
+Head:   Linear(512→32)                                   → (1, 32)
+
+Parameters: ~554K
+Flash (INT8 TFLite): ~562 KB (weights + INT32 biases + per-channel quant scales)
 ```
 
-**Why no bias:** This is a critical Deep SVDD requirement. With bias, the network can trivially collapse to mapping everything to the centroid by setting W=0, b=c. Without bias, it must use input structure to minimise the loss, learning genuinely discriminative projections.
+Each 10-second clip is sliced into ~10 frames (0.975 s each). The encoder processes each frame independently, yielding a `(10, 32)` embedding matrix per clip.
 
-**Why ReLU:** `max(0, x)` is trivially implementable on a microcontroller — a single comparison per element.
+**Depthwise-separable convolutions:** Each `DepthwiseSeparableBlock` applies a 3×3 depthwise convolution (one filter per channel) followed by a 1×1 pointwise convolution. This reduces parameters ~8–9× versus a standard convolution with the same channel counts. BatchNorm layers are folded into conv weights during TFLite export, adding zero runtime cost.
 
-### Training (on-device)
+### Anomaly Detection: FsSeparator (f\_s)
 
-1. **Centroid initialisation:** Forward-pass all training clips, set c = mean of projected embeddings. The centroid is then **fixed** (never updated during training).
+A two-layer network trained on-device using **Deep SVDD** (Ruff et al., ICML 2018). It maps 32D embeddings into an 8D space where normal sounds cluster around a fixed centroid.
 
-2. **SGD optimisation:** Minimise the Deep SVDD loss:
+**Architecture:**
+
+```
+f_s(x) = ReLU( W₂ · ReLU( W₁ · x + b₁ ) )
+
+W₁ ∈ ℝ^{32×32}, b₁ ∈ ℝ^{32}   (fc1: bias=True)
+W₂ ∈ ℝ^{8×32}                  (fc2: bias=False ← required by Deep SVDD)
+
+Parameters: 32×32 + 32 + 32×8 = 1,312
+```
+
+**Why no bias on fc2?** Deep SVDD requires the final layer to be bias-free. With bias, the network can trivially satisfy the loss by setting `W₂ = 0`, `b₂ = c` (the centroid), mapping all inputs to the centroid regardless of content. Without bias, the network must actually learn to use the input structure.
+
+**Training (on-device, 10-minute window):**
+
+1. Forward-pass all 60 training clips through f\_c and stack the per-frame embeddings.
+2. Initialise centroid `c = mean(f_s(x_i))` over all training embeddings. **Fix c — never update it.**
+3. Minimise the SVDD loss with SGD (lr=0.01, weight decay=1e-4, no momentum):
    ```
-   L = (1/N) Σ_i ||f_s(x_i) - c||² + (λ/2)||W||²
+   L = (1/N) Σᵢ ||f_s(xᵢ) − c||²
    ```
-   - SGD with lr=0.01, weight decay λ=1e-4 (no momentum — Arduino-feasible)
-   - 100 epochs over the training clips
-   - The gradient is one outer product per sample — see `src/fs/model.py` for the full derivation
+4. Set threshold at the 95th percentile of training scores: `τ = percentile(||f_s(xᵢ)−c||², 95)`.
 
-3. **Threshold setting:** Score all training clips, set threshold at the 95th percentile.
+**Scoring (inference):**
 
-### Scoring (real-time inference)
+Each clip yields ~10 frames. The clip score is the **maximum** per-frame squared L2 distance from the centroid:
 
 ```
-score(x) = ||f_s(x) - c||² = Σ_d (ReLU(W @ x)_d - c_d)²
+score(clip) = max_frame ||f_s(frame_embedding) − c||²
 ```
 
-One matrix-vector multiply (8×16), one ReLU, one squared distance. This takes microseconds on an ARM Cortex-M4.
+Max-frame scoring is more sensitive than mean-pooling: a clip with one anomalous frame (e.g., a brief mechanical knock) will score high even if the remaining frames are normal. A clip scores as anomalous if `score > τ`.
 
-### On-device gradient computation
+---
 
-For Arduino deployment, the gradient is computed analytically (no autograd library needed):
+## Evaluation Protocol
 
-```
-z = W @ x              (8,)     — matrix-vector multiply
-a = ReLU(z)            (8,)     — element-wise max(0, z)
-loss = ||a - c||²
-dL/da = 2(a - c)       (8,)     — element-wise subtraction + scale
-dL/dz = dL/da * (z > 0)(8,)     — mask by ReLU gradient
-dL/dW = outer(dL/dz, x)(8, 16)  — one outer product
-W -= lr * (dL/dW + λW)          — SGD step with weight decay
-```
+Evaluation uses the **MIMII dataset** (16 machines: 4 types × 4 IDs). The protocol is designed to mirror deployment as closely as possible.
 
-Total per-sample cost: 1 matrix-vector product + 1 outer product = 256 multiply-accumulates.
+**For each machine:**
+
+1. Split normal clips 80/20 into training (SVDD fitting) and held-out sets.
+2. Fit SVDD on the 80% training split; compute per-frame training scores.
+3. Set threshold `τ` at the 95th percentile of **training scores** — not held-out scores. In real deployment, the node has no held-out set; it must set its threshold from the clips it trained on.
+4. Evaluate AUC, precision, and recall on **held-out normal + all abnormal clips**.
+
+**Why this matters:** Using held-out normal clips to set the threshold would be data leakage — in deployment, the node has no future normal clips available when deciding where to draw the line. AUC remains valid as a threshold-free metric regardless.
+
+**Metrics:**
+- **AUC** (Area Under ROC Curve): threshold-free measure of score separation between normal and anomalous clips. AUC = 1.0 is perfect; 0.5 is random.
+- **Precision**: of clips predicted anomalous, how many are actually anomalous.
+- **Recall** (Detection Rate): of all anomalous clips, how many are correctly flagged.
+
+---
+
+## Baseline Results
+
+Three baselines are evaluated on MIMII to understand the contribution of each pipeline stage.
+
+| Model | Description | Mean AUC |
+|-------|-------------|----------|
+| YAMNet only | Raw 1024D → PCA(32D) → centroid distance | 0.696 |
+| YAMNet + PCA + SVDD (teacher) | Full teacher pipeline | **0.755** |
+| AcousticEncoder + SVDD (student) | Full student pipeline (on-device) | 0.723 |
+
+The student (0.723) is 3.2 points below the teacher ceiling (0.755) — a reasonable gap given that the student CNN has 554K parameters and was trained only on the FSD50K eval subset (~10K clips). The student matches or exceeds the YAMNet-only baseline on most machines.
+
+### Per-Machine AUC
+
+| Machine | YAMNet | Teacher | Student |
+|---------|--------|---------|---------|
+| fan/id\_00 | 0.547 | 0.571 | 0.632 |
+| fan/id\_02 | 0.813 | 0.815 | 0.813 |
+| fan/id\_04 | 0.622 | 0.771 | 0.758 |
+| fan/id\_06 | 0.782 | 0.842 | 0.878 |
+| pump/id\_00 | 0.920 | 0.823 | 0.807 |
+| pump/id\_02 | 0.854 | 0.970 | 0.706 |
+| pump/id\_04 | 0.896 | 0.968 | 0.964 |
+| pump/id\_06 | 0.510 | 0.898 | 0.716 |
+| slider/id\_00 | 0.969 | 0.988 | 0.999 |
+| slider/id\_02 | 0.661 | 0.688 | 0.692 |
+| slider/id\_04 | 0.615 | 0.660 | 0.731 |
+| slider/id\_06 | 0.744 | 0.650 | 0.584 |
+| valve/id\_00 | 0.383 | 0.483 | 0.514 |
+| valve/id\_02 | 0.893 | 0.642 | 0.637 |
+| valve/id\_04 | 0.337 | 0.508 | 0.488 |
+| valve/id\_06 | 0.596 | 0.799 | 0.644 |
+| **Mean** | **0.696** | **0.755** | **0.723** |
+
+Valve machines are consistently the hardest — their anomalies produce subtle acoustic changes that are difficult to separate in the 32D embedding space. Sliders and pumps are generally easier, with several machines achieving AUC > 0.9.
 
 ---
 
 ## Deployment Simulation
 
-To validate that the pipeline works in a realistic streaming scenario, we simulated deployment on 3 machines: a fan (id\_00), a pump (id\_02), and a valve (id\_04). These were chosen to cover different machine types and difficulty levels.
+`simulate_deployment.py` validates the full pipeline in a realistic streaming scenario with no access to future data.
 
-**Protocol:**
-- **Phase 1 — Training (2 min):** Each node listens to 12 normal audio clips (10s each) and trains SVDD
-- **Phase 2 — Normal monitoring (5 min):** Node scores 30 normal clips, measuring false alarm rate
-- **Phase 3 — Anomaly injection (5 min):** Machine develops a fault — node scores 30 anomaly clips
+### Protocol
 
-Each clip is processed one-at-a-time, simulating real-time streaming. The threshold is set entirely from Phase 1 training data — the node has no future knowledge.
+For each of the 16 MIMII machines:
 
-### Results
+1. **Training phase (10 min):** Draw 60 normal clips at random (no replacement). Fit AcousticEncoder embeddings → SVDD → centroid → threshold (95th percentile of training scores).
 
-| Node | Machine    | Training | Detection Rate | False Alarm Rate | Time to Detect | AUC   |
-|------|------------|----------|----------------|------------------|----------------|-------|
-| 1    | fan/id\_00  | 12 clips | 33.3%          | 13.3%            | 40s            | 0.712 |
-| 2    | pump/id\_02 | 12 clips | 100.0%         | 20.0%            | 0s             | 0.951 |
-| 3    | valve/id\_04| 12 clips | 40.0%          | 10.0%            | 10s            | 0.724 |
-| **Mean** |        |          | **57.8%**      | **14.4%**        |                | **0.796** |
+2. **Repeat 3 rounds:**
+   - **Normal monitoring (5 min):** Score 30 normal clips not seen during training. Count false positives (clips scored above threshold).
+   - **Anomaly injection (5 min):** Score 30 abnormal clips. Record detection: whether any clip scores above threshold, and how many clips elapsed before the first detection (detection delay in seconds).
 
-**Timeline plot** — anomaly scores over time for each node, with threshold and phase annotations:
+Each clip is a fresh random sample with no repetition across the whole simulation. The threshold is fixed from training — the node has no information about future clips.
 
-![Deployment timeline](figures/deployment_timeline.png)
+### Aggregate Results (all 16 machines, 47 rounds)
 
-**Score distributions** — separation between normal and anomaly scores during monitoring:
-
-![Score distributions](figures/deployment_distributions.png)
+| Metric | Value |
+|--------|-------|
+| Detection rate | **97.9%** (46 / 47 rounds detected) |
+| False alarm rate | **5.5%** (78 / 1,410 normal clips) |
+| Mean detection delay | **47 s** |
+| Median detection delay | **20 s** |
+| Max detection delay | **260 s** (valve/id\_00, round 1) |
 
 ### Interpretation
 
-- **Pump (AUC 0.951)** is an easy case: pump anomalies produce clearly different acoustic signatures, detected instantly with 100% rate
-- **Valve (AUC 0.724)** and **fan (AUC 0.712)** are harder: their anomalies are subtler mechanical faults with partial overlap in the acoustic feature space
-- **False alarm rate (14.4%)** is elevated because the threshold is estimated from only 12 clips. In production, this would improve with more training data or a higher threshold percentile (e.g. 99th)
-- **Mean AUC (0.796)** is slightly below the full-dataset mean (0.828) because we train on 12 clips instead of hundreds — this is the honest cold-start result
+- **Detection rate (97.9%):** The system catches faults in almost every round. The single missed detection was valve/id\_06 round 1, the hardest machine in the dataset.
+- **False alarm rate (5.5%):** One false alarm per ~18 normal clips. In a 5-minute monitoring window with 30 clips, this translates to ~1.7 false alarms per window on average. This is driven by the threshold being estimated from only 60 training clips; a longer training window would give a more stable threshold.
+- **Detection delay:** The median delay is 20 seconds (2 clips), meaning for most machines the fault is caught on the first or second anomalous clip. The long tail (max 260 s) comes from valve machines where the anomaly signal is weak and intermittent.
+- **One missed detection in 47 rounds** demonstrates the pipeline is robust across diverse machine types with no machine-specific tuning.
 
-The simulation demonstrates the core value proposition: **2 minutes of listening produces a working anomaly detector with 128 parameters, no labels, and no machine-specific pre-training.**
+Per-machine plots are saved to `outputs/deployment_sim/`. Each plot shows anomaly scores over time with the threshold, phase annotations, and detection delay arrow.
 
-To reproduce: `python scripts/simulate_deployment.py --nodes fan/id_00 pump/id_02 valve/id_04`
+**Example — pump/id\_00 (easy case, instant detection):**
 
----
+![Deployment simulation — pump/id_00](figures/deployment_example_easy.png)
 
-## Full Evaluation Results
+**Example — valve/id\_00 (hard case, high detection delay):**
 
-When trained on all available normal clips (hundreds per machine, rather than the 12-clip cold-start), the pipeline achieves:
-
-| Condition | Mean AUC | Description |
-|-----------|----------|-------------|
-| f\_c only (centroid distance) | 0.754 | YAMNet + PCA, no learned projection |
-| **f\_c + f\_s (Deep SVDD)** | **0.828** | **+7.3% — the best model** |
-
-### Per-machine breakdown
-
-| Machine | f\_c AUC | f\_c + f\_s AUC | Change |
-|---------|---------|----------------|--------|
-| fan/id\_00 | 0.583 | 0.675 | +0.093 |
-| fan/id\_02 | 0.930 | 0.816 | -0.115 |
-| fan/id\_04 | 0.813 | 0.971 | +0.157 |
-| fan/id\_06 | 0.897 | 0.902 | +0.004 |
-| pump/id\_00 | 0.945 | 0.907 | -0.037 |
-| pump/id\_02 | 0.966 | 0.990 | +0.024 |
-| pump/id\_04 | 0.903 | 0.953 | +0.051 |
-| pump/id\_06 | 0.651 | 0.886 | +0.236 |
-| slider/id\_00 | 0.994 | 0.998 | +0.004 |
-| slider/id\_02 | 0.764 | 0.950 | +0.186 |
-| slider/id\_04 | 0.581 | 0.815 | +0.234 |
-| slider/id\_06 | 0.478 | 0.662 | +0.184 |
-| valve/id\_00 | 0.723 | 0.734 | +0.011 |
-| valve/id\_02 | 0.733 | 0.708 | -0.025 |
-| valve/id\_04 | 0.682 | 0.663 | -0.019 |
-| valve/id\_06 | 0.424 | 0.610 | +0.185 |
-
-f\_s improves 12 of 16 machines, with the largest gains on machines where f\_c features alone are weakest (slider/id\_04: +0.234, pump/id\_06: +0.236). The few regressions (fan/id\_02, pump/id\_00) are cases where f\_c features were already near-optimal and the 8D projection marginally loses information.
-
-![SVDD evaluation results](figures/fs_results.png)
+![Deployment simulation — valve/id_00](figures/deployment_example_hard.png)
 
 ---
 
 ## Memory Budget
 
-The system is designed to fit within the Arduino Nano 33 BLE's constraints:
+The Arduino Nano 33 BLE has 2,048 KB flash and 756 KB SRAM.
 
-| Component | Storage | Location | Notes |
-|-----------|---------|----------|-------|
-| YAMNet TFLite (int8 quantised) | ~180 KB | Flash | Frozen, pre-loaded |
-| PCA components (16 × 1024) | 65.5 KB | Flash | Frozen, pre-loaded |
-| PCA mean (1024) | 4 KB | Flash | Frozen, pre-loaded |
-| f\_s weights (8 × 16) | 512 B | SRAM | Trained on-device |
-| Centroid (8) | 32 B | SRAM | Set during training |
-| Threshold (1) | 4 B | SRAM | Set during training |
-| **Total** | **~249 KB** | | **Fits in 256 KB SRAM + 1 MB flash** |
+### Flash
 
-**Runtime memory** for inference: one 16D input vector (64 B) + one 8D output vector (32 B) + intermediates. Training additionally requires storing the training clips in a ring buffer, but 12 clips × 16 floats × 4 bytes = 768 bytes.
+| Component | Size | Notes |
+|-----------|------|-------|
+| AcousticEncoder INT8 weights | ~534 KB | 1 byte per weight after quantisation |
+| INT32 biases (BN-folded) | ~14 KB | 4 bytes per output channel |
+| Per-channel quant scales | ~14 KB | 4 bytes per output channel |
+| TFLite flatbuffer metadata | ~10 KB | graph/tensor descriptors |
+| Application code | ~50 KB | Arduino sketch estimate |
+| **Total** | **~622 KB** | **30% of 2,048 KB budget** |
 
-The model itself (f\_s weights + centroid + threshold) is **548 bytes** — small enough to transmit over BLE in a single packet.
+BatchNorm layers are **folded** into preceding Conv2d weights during TFLite INT8 export, so they contribute no additional flash cost at runtime. The ~14 KB for biases reflects BN-folded biases absorbed into each conv layer.
 
----
+### SRAM
 
-## Node Learning Experiments
+All sizes are INT8 activations unless noted.
 
-We investigated whether peer-to-peer communication between nodes can improve individual anomaly detection performance. Three approaches were implemented and evaluated on all 120 pairwise and 20 triple combinations of the 16 MIMII machines.
+| Component | Inference | Training |
+|-----------|-----------|----------|
+| TFLite Micro arena (peak activations + scratch + metadata) | ~73 KB | ~73 KB |
+| Audio capture buffer (15,600 samples × float32) | ~61 KB | ~61 KB |
+| Log-mel spectrogram buffer (1×64×61 × float32) | ~15 KB | ~15 KB |
+| f\_s weights + centroid (float32) | ~5 KB | ~5 KB |
+| f\_s gradients (SGD, no momentum) | — | ~5 KB |
+| f\_s forward activations (for backprop) | — | ~0.4 KB |
+| Mini-batch embedding buffer | — | ~1.5 KB |
+| Stack + misc | ~16 KB | ~16 KB |
+| **Total** | **~170 KB** | **~177 KB** |
+| **Budget** | **756 KB** | **756 KB** |
 
-### Approach 1: Contrastive replacement (failed)
+The SRAM peak during activation is at the **B1 depthwise layer**: input `(1, 32, 32, 31)` and output `(1, 32, 16, 16)` must be live simultaneously, totalling 39,936 bytes (~39 KB). This is the constraining activation; all subsequent layers are smaller.
 
-**Idea:** Replace SVDD scoring entirely with a contrastive model that pushes anomalies away from normal prototypes.
+Training uses only **~177 KB / 756 KB (23%)** of SRAM — entirely feasible on-device. SGD with no momentum avoids the 2× memory overhead of Adam (no `m` and `v` vectors).
 
-**Architecture:** ContrastiveMLP (16 → 16 → 8, 408 params), trained with hinge loss using own normal prototypes vs. foe prototypes. Scoring by distance ratio: D\_normal / (D\_foe + epsilon).
+The TFLite Micro arena must be verified empirically with `RecordingMicroInterpreter::arena_used_bytes()` after TFLite export, as static estimates exclude some scratch buffer overheads.
 
-**Result:** Mean AUC dropped from 0.828 to **0.664** (-0.164). Catastrophic failure.
-
-**Why it failed:**
-- Replaced the proven SVDD model with an untrained contrastive model, starting from scratch
-- Only 8 prototypes per node — insufficient training signal for contrastive learning
-- Friend/foe gating was poorly calibrated (R\_gate=3.0 too generous), causing same-type machines to be misclassified as friends
-
-### Approach 2: SVDD + foe-push fine-tuning (marginal harm)
-
-**Idea:** Keep SVDD, add a "foe-push" loss term that pushes foe prototypes away from the centroid: `L = L_svdd + α * max(0, m² - ||f_s(p_foe) - c||²)`.
-
-**Result:** Mean AUC dropped to **0.790** (-0.038).
-
-**Why it failed:**
-- Foe prototypes already project far from the centroid naturally (SVDD's centroid captures own-machine statistics; other machines are inherently distant)
-- Fine-tuning with the push loss slightly perturbed SVDD weights that were already well-calibrated
-- The push solved a problem that didn't exist
-
-### Approach 3: Fisher-weighted scoring (neutral to slight harm)
-
-**Idea:** Don't retrain SVDD at all. Instead, reweight the per-dimension scoring using Fisher's discriminant ratio: upweight dimensions where foe prototypes are far (high between-class variance) and own normal clips are tight (low within-class variance).
-
-**Architecture:** Same SVDD model, same weights. Only the 8 per-dimension scoring weights change (32 bytes of additional memory).
-
-**Result:** Mean AUC dropped to **0.811** (-0.016 vs SVDD).
-
-**Why it didn't help:**
-- Fisher's discriminant upweights dimensions that separate machine types (e.g., "this dimension separates fans from pumps")
-- But anomalies are mechanical faults *within* a machine type (e.g., bearing wear, imbalance), which manifest on dimensions orthogonal to inter-machine differences
-- **Fundamental mismatch:** between-class discriminative dimensions ≠ within-class anomaly dimensions
-
-### Gating accuracy
-
-Friend/foe classification was auto-calibrated using Youden's J statistic on prototype distances:
-- **R\_gate = 1.944** (Youden's J = 0.531)
-- Same-type distance range: 0.777 – 5.462 (median 1.694)
-- Different-type distance range: 1.268 – 4.924 (median 2.512)
-- Heavy overlap between distributions limits gating accuracy to ~82% for foe detection
-
-### Summary
-
-| Approach | Mean AUC | Delta vs SVDD | Modifies f\_s weights? |
-|----------|----------|---------------|----------------------|
-| **SVDD baseline** | **0.828** | **—** | **N/A** |
-| Contrastive replacement | 0.664 | -0.164 | Yes (replaced) |
-| SVDD + foe-push | 0.790 | -0.038 | Yes (fine-tuned) |
-| Fisher-weighted scoring | 0.811 | -0.016 | No |
-
-![Node learning comparison](figures/node_learning_results.png)
-
-**Conclusion:** All three node learning approaches degraded performance. The progression from -0.164 to -0.038 to -0.016 shows that *less intervention is better*: the best result came from not touching the SVDD weights at all. The SVDD baseline at 0.828 AUC with 128 parameters and a 2-minute cold start is the strong result. Node learning's current value is in the **communication infrastructure** (BLE prototype exchange, gating protocol) rather than immediate AUC gains.
-
-**Root cause:** On the MIMII dataset, peer information about other machine types does not help detect mechanical faults within a given machine. The anomalies (bearing defects, imbalance, leaks) are not well-characterised by knowing how other machines sound. This is a property of the dataset and the anomaly types, not a fundamental limitation of decentralised learning.
-
----
-
-## Next Steps
-
-### (i) Physical deployment on Arduino Nano 33 BLE
-
-The pipeline is ready for physical deployment. The steps are:
-
-1. **Flash YAMNet:** Convert the TFLite model to int8 quantised format, deploy via TensorFlow Lite for Microcontrollers. The Arduino Nano 33 BLE's nRF52840 has hardware support for the required operations.
-
-2. **Pre-load PCA transform:** Store the 16×1024 PCA components matrix and 1024D mean vector in flash memory (69.5 KB).
-
-3. **Implement f\_s in C++:** The entire model is one matrix-vector multiply + ReLU + distance calculation. The training loop (SGD with analytical gradients) is ~50 lines of C++ — see the gradient derivation in `src/fs/model.py` header comments.
-
-4. **Audio capture:** Use the onboard MP34DT05 microphone (PDM, 16 kHz), buffer 10-second clips, compute embeddings through YAMNet, and feed to f\_s.
-
-5. **BLE communication:** For multi-node deployment, exchange prototypes (8 × 16D = 512 bytes) and variance vectors (8 floats = 32 bytes) over BLE. The total payload (544 bytes) fits in a few BLE packets.
-
-### (ii) Improving the current model for real deployment
-
-Several improvements would reduce false alarm rate and increase detection reliability:
-
-- **Longer training phase:** The deployment simulation used 12 clips (2 min). Using 30–60 clips (5–10 min) would give a more stable threshold estimate and reduce the 14.4% false alarm rate. The marginal cost is waiting longer before the node goes active.
-
-- **Adaptive thresholding:** Instead of a fixed 95th percentile, use a running percentile that updates as the node accumulates more normal observations during monitoring. This self-calibrates over time without requiring re-training.
-
-- **Hyperparameter tuning of f\_s:** The current hyperparameters (lr=0.01, weight\_decay=1e-4, output\_dim=8, epochs=100) were chosen as sensible defaults. A grid search over output\_dim ∈ {4, 6, 8, 12} and lr ∈ {0.005, 0.01, 0.02} could improve per-machine results, particularly for the weaker machines (valve, some fans).
-
-- **Per-machine threshold calibration:** Different machines may benefit from different percentile thresholds. A node could auto-tune this by monitoring its score distribution over the first hour of operation.
-
-- **Consecutive-alert filtering:** Rather than alerting on every single clip above threshold, require N consecutive alerts (e.g., 3 clips = 30 seconds) before raising an alarm. This dramatically reduces false alarms from transient noise spikes.
-
-### (iii) Future directions for node learning
-
-The three approaches tried in this project all degraded performance on the MIMII dataset. However, the communication infrastructure (BLE prototype exchange, friend/foe gating) is in place, and several directions could make peer learning beneficial:
-
-- **Same-type anomaly sharing:** If two nodes of the same type encounter each other, and one has detected anomalies, it could share anomaly prototypes. The other node could use these to set a tighter, informed threshold. This requires anomaly prototypes (which we don't have during normal one-class training), but a node that has been running for a while and has flagged alerts could build them.
-
-- **Threshold calibration from peers:** Instead of exchanging model information, peers could exchange their score distributions (compact summary: mean, std, percentile values). A node with few training samples could calibrate its threshold by comparing its score distribution to a peer's, especially if the peer has seen more data. This is the simplest form of useful peer information.
-
-- **Collaborative variance estimation:** The Fisher approach showed that pooling variance estimates across same-type friends was essentially neutral (-0.004 vs SVDD). With more friends (e.g., 5–10 same-type nodes in a factory), the pooled variance estimate could become meaningfully better than any individual's, particularly for nodes with very short training phases.
-
-- **Federated SVDD weight averaging:** If multiple nodes of the same type train SVDD independently, averaging their weight matrices could produce a more robust model than any individual. This is essentially federated learning with a one-layer network — the communication cost is 512 bytes (the weight matrix) and the computation is a weighted average.
-
-- **Different deployment domains:** The MIMII dataset may be a particularly hard case for node learning because its 4 machine types (fan, pump, slider, valve) produce very different acoustic signatures. In a factory with 20 instances of the same machine, same-type peer learning would have much more opportunity to be useful.
+Run `python scripts/memory_audit.py` for a full layer-by-layer breakdown.
 
 ---
 
@@ -344,59 +342,117 @@ The three approaches tried in this project all degraded performance on the MIMII
 
 ```
 tinyml/
-├── data/                                   # Raw MIMII audio (18,019 clips)
+├── data/
+│   ├── fsd50k/                          # FSD50K eval audio (for student training)
 │   └── {fan,pump,slider,valve}/
 │       └── {id_00,id_02,id_04,id_06}/
-│           ├── normal/*.wav                # 10s clips, 16 kHz mono
+│           ├── normal/*.wav             # 10 s clips, 16 kHz mono
 │           └── abnormal/*.wav
 │
+├── models/
+│   └── yamnet/
+│       └── yamnet.tflite               # YAMNet float32 TFLite (4 MB, offline use only)
+│
 ├── src/
-│   ├── fs/
-│   │   ├── model.py                        # FsSeparator: 16→8 Deep SVDD
-│   │   └── node_learning.py                # Fisher-weighted scoring + prototypes
-│   ├── data/dataset.py                     # MIMII data loading + windowing
-│   └── evaluation/metrics.py               # AUC computation + reporting
+│   └── models/
+│       ├── cnn.py                      # AcousticEncoder: MobileNet V1-style DSC CNN (f_c)
+│       └── separator.py               # FsSeparator: Deep SVDD (f_s) + train_fs/score_clips
 │
 ├── scripts/
-│   ├── extract_embeddings.py               # YAMNet → 1024D cached embeddings
-│   ├── evaluate_yamnet.py                  # PCA fitting + f_c baseline
-│   ├── simulate_fs.py                      # SVDD training + evaluation (all machines)
-│   ├── simulate_node_learning.py           # 2-node and 3-node peer learning
-│   ├── simulate_deployment.py              # Real-time deployment simulation
-│   └── cold_start.py                       # Cold-start evaluation (N clips)
+│   ├── download_fsd50k.py             # Download FSD50K eval set
+│   ├── prepare_teacher.py             # YAMNet → FSD50K embeddings + fit PCA(32D)
+│   ├── prepare_mels.py                # FSD50K WAVs → log-mel spectrogram cache
+│   ├── train_student.py               # Distil AcousticEncoder via MSE on FSD50K
+│   ├── test_yamnet.py                 # Baseline: YAMNet+PCA centroids on MIMII
+│   ├── test_teacher.py                # Baseline: YAMNet+PCA+SVDD on MIMII (teacher)
+│   ├── test_student.py                # Evaluate AcousticEncoder+SVDD on MIMII (student)
+│   ├── simulate_deployment.py         # Streaming deployment simulation (all 16 machines)
+│   ├── memory_audit.py                # Flash + SRAM budget audit (static + optional TFLite)
+│   └── export_student.py              # Export AcousticEncoder: .pt → ONNX → TFLite INT8 → .h
 │
-├── outputs/
-│   ├── embeddings/                         # Cached YAMNet frames (1024D per frame)
-│   ├── fc_baseline/                        # PCA transform + f_c-only AUCs
-│   ├── fs_simulation/                      # Full SVDD evaluation results
-│   ├── node_learning/                      # Peer learning experiment results
-│   └── deployment_simulation/              # Streaming deployment results + plots
-│
-├── models/yamnet/yamnet.tflite             # YAMNet TFLite model
-└── configs/fc.yaml                         # Audio + model configuration
+└── outputs/
+    ├── fsd50k_cache/                  # eval_mels.npy + eval_embeddings.npy
+    ├── pca/                           # pca_components.npy + pca_mean.npy
+    ├── student/                       # acoustic_encoder.pt + training_curve.png
+    ├── yamnet_baseline/               # results.yaml (YAMNet centroid baseline)
+    ├── teacher_baseline/              # results.yaml (YAMNet+PCA+SVDD baseline)
+    ├── student_baseline/              # results.yaml (AcousticEncoder+SVDD)
+    ├── deployment_sim/                # results.yaml + per-machine plots
+    └── export/                        # .onnx, .tflite (f32 + int8), .h (C header)
 ```
 
 ---
 
 ## Running the Code
 
-**Prerequisites:** Python 3.10+, PyTorch, NumPy, scikit-learn, matplotlib, PyYAML, tqdm, ai-edge-litert (for YAMNet inference).
+**Prerequisites:** Python 3.10+, PyTorch, NumPy, scikit-learn, librosa, matplotlib, tqdm, ai-edge-litert (for YAMNet inference).
+
+### Full pipeline (first time)
 
 ```bash
-# 1. Extract YAMNet embeddings (run once, ~30 min)
-python scripts/extract_embeddings.py
+# 1. Download FSD50K eval set (~25 GB)
+python scripts/download_fsd50k.py
 
-# 2. Fit PCA and evaluate f_c baseline
-python scripts/evaluate_yamnet.py
+# 2. Extract YAMNet embeddings from FSD50K and fit PCA (run once, ~15–20 min)
+python scripts/prepare_teacher.py
 
-# 3. Train and evaluate SVDD (all 16 machines)
-python scripts/simulate_fs.py
+# 3. Compute and cache log-mel spectrograms for FSD50K (run once, ~30 min)
+python scripts/prepare_mels.py
 
-# 4. Run deployment simulation (3 nodes, streaming)
-python scripts/simulate_deployment.py --nodes fan/id_00 pump/id_02 valve/id_04
+# 4. Train AcousticEncoder via knowledge distillation (50 epochs, ~10 min on GPU)
+python scripts/train_student.py
 
-# 5. Run node learning experiments (optional)
-python scripts/simulate_node_learning.py
+# 5. Evaluate all baselines on MIMII
+python scripts/test_yamnet.py          # YAMNet+PCA centroid baseline
+python scripts/test_teacher.py         # YAMNet+PCA+SVDD (teacher)
+python scripts/test_student.py         # AcousticEncoder+SVDD (student)
+
+# 6. Run deployment simulation (all 16 machines × 3 rounds)
+python scripts/simulate_deployment.py
+
+# 7. Check memory budget
+python scripts/memory_audit.py
+
+# 8. Export to TFLite INT8 for Arduino deployment
+python scripts/export_student.py
 ```
 
-All outputs (plots, YAML summaries) are saved to `outputs/`.
+### Key options
+
+```bash
+# Student training — adjust epochs and batch size
+python scripts/train_student.py --epochs 100 --batch 256 --lr 1e-3
+
+# Deployment simulation — all outputs saved to outputs/deployment_sim/
+python scripts/simulate_deployment.py
+
+# Memory audit with real TFLite file size
+python scripts/memory_audit.py --tflite outputs/export/acoustic_encoder_int8.tflite
+```
+
+All results (YAML summaries + PNG plots) are written to `outputs/`. Re-running any evaluation script overwrites previous results.
+
+---
+
+## Next Steps
+
+### Physical deployment on Arduino Nano 33 BLE
+
+The pipeline is ready for physical deployment. The main steps are:
+
+1. **Flash the student model:** Run `scripts/export_student.py` to produce `acoustic_encoder_int8.h`, a C header with the model weights as a byte array. Include this in the Arduino sketch alongside TensorFlow Lite for Microcontrollers.
+
+2. **Implement f\_s in C++:** The separator is one matrix-vector multiply + ReLU + distance calculation. The training loop (SGD with analytical gradients) is ~50 lines of C++. No autograd library is needed — the gradient is one outer product per sample.
+
+3. **Audio capture:** Use the onboard PDM microphone at 16 kHz. Buffer 0.975 s frames (15,600 samples), compute log-mel spectrograms (64 bins, 61 time steps), and feed to the encoder.
+
+4. **Quantisation accuracy check:** Run `scripts/export_student.py` and compare INT8 vs float32 output magnitudes. Post-training INT8 quantisation typically introduces a small accuracy drop (~1–2% AUC) which should be verified on MIMII before deployment.
+
+### Improving student performance
+
+The main bottleneck is **training data volume**. The current student was trained only on the FSD50K eval set (~10K clips). Training on the full FSD50K dataset (~50K clips) is expected to substantially improve the student's generalisation and close the gap to the teacher.
+
+Other directions worth exploring:
+- **Deeper f\_s:** A three-layer separator (32→32→16→8) increases on-device training memory slightly but may better exploit the 32D embedding space.
+- **Adaptive thresholding:** Instead of a fixed 95th percentile, update the threshold as the node accumulates more normal observations during monitoring.
+- **Consecutive-alert filtering:** Require N consecutive clips above threshold before raising an alarm, reducing sensitivity to transient noise spikes.
