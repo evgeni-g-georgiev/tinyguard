@@ -1,6 +1,9 @@
 # Deployment Memory Analysis
 
-Arduino Nano 33 BLE hardware budget: **2 MB flash**, **756 KB SRAM**
+**Hardware target: Arduino Uno Q — MCU only**
+STM32, Arm Cortex-M33 @ 160 MHz, **2 MB flash**, **786 KB SRAM**
+
+The board has two processors. The MPU (4 GB RAM) is used exclusively for Bluetooth (Python + bleak). All TinyML constraints apply to the MCU only.
 
 ---
 
@@ -159,9 +162,41 @@ For backprop, PyTorch must retain the tensors needed to compute each parameter's
 | Centroid + threshold | — | 36 | 36 |
 | Stack + heap | ~20,000 | ~20,000 | ~20,000 |
 | **Total** | **~192 KB** | **~120 KB** | **~121 KB** |
-| **Headroom vs 756 KB** | **564 KB** | **636 KB** | **635 KB** |
+| **Headroom vs 786 KB** | **594 KB** | **666 KB** | **665 KB** |
 
 All three phases are comfortably within budget. The bottleneck is the **Collect phase** at ~192 KB, driven by the full embeddings buffer (75 KB) coexisting with the f_c tensor arena (~40–50 KB) and the audio DSP buffers (~55 KB).
+
+---
+
+## f_s Training Time Estimate
+
+The 50-epoch training run after the 10-minute collection window. Derived from first principles — not benchmarked.
+
+**FLOP count per epoch (batch_size=32, 600 frames → 19 batches):**
+
+| Pass | Operation | MACs per batch | × 19 batches |
+|---|---|---|---|
+| Forward | fc1 (32 samples × 32in × 32out) | 32,768 | 622,592 |
+| Forward | fc2 (32 × 32in × 8out) | 8,192 | 155,648 |
+| Forward | SVDD loss | ~512 | ~9,728 |
+| Backward | ∂W₁ (32 × 32 × 32) | 32,768 | 622,592 |
+| Backward | ∂W₂ (32 × 32 × 8) | 8,192 | 155,648 |
+| Backward | ReLU masks + propagation | ~512 | ~9,728 |
+| Update | SGD step (1,312 params × 2 ops) | 2,624 | 49,856 |
+| **Total** | | | **~2.4M MACs/epoch** |
+
+**Throughput on Cortex-M33 @ 160 MHz:**
+
+The M33 FPU can issue one FMLA per cycle in ideal conditions. Practical throughput for small dense matrix ops is lower due to memory latency, loop overhead, and scalar fallback for small matrices.
+
+| Effective throughput | Time per epoch | 50 epochs |
+|---|---|---|
+| 50 MFLOPS (conservative) | ~48 ms | ~2.4 s |
+| 100 MFLOPS (optimistic) | ~24 ms | ~1.2 s |
+
+**Estimate: 50 epochs takes ~1–2.5 seconds on the MCU.** This justifies the fixed-epoch approach: training completes in a few seconds immediately after the 10-minute collection window. The previous figure of "~5 seconds" in the code comments was based on an incorrect assumption of a Cortex-M4F at 64 MHz — the actual M33 at 160 MHz is ~2.5× faster. The qualitative conclusion is unchanged.
+
+**Confidence: ESTIMATE (±50%)** — derivation is sound but actual throughput depends on compiler optimisation, CMSIS-DSP library usage, and cache behaviour. Only MCU benchmarking gives the exact figure.
 
 ---
 

@@ -7,8 +7,8 @@ Realistic on-device flow being simulated:
      AcousticEncoder in real time and the 32D embedding stored (~75KB total).
      Raw audio and mel spectrograms are discarded after each frame.
   2. Train phase: FsSeparator (Deep SVDD) is trained on all stored embeddings
-     for a fixed number of epochs. At ~70ms/epoch on Cortex-M4F, 50 epochs
-     takes under 5 seconds.
+     for a fixed number of epochs. At ~24–48 ms/epoch on Cortex-M33 @ 160 MHz
+     (~2.4M MACs/epoch), 50 epochs takes ~1–2.5 seconds.
   3. Threshold is set at the 95th percentile of training scores, then the
      device switches to continuous monitoring.
 

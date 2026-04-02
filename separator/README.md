@@ -62,8 +62,8 @@ The final layer has no bias to prevent the trivial collapse solution (W=0, b=cen
 ## SVDD training
 
 Simulates the realistic on-device flow:
-- During the 10-minute collection window, each audio frame is processed through the frozen AcousticEncoder and the 32D embedding stored (~75KB total — well within the 756KB SRAM budget). Raw audio is discarded after each frame.
-- After collection, FsSeparator is trained on all stored embeddings for a fixed 50 epochs. At ~70ms/epoch on Cortex-M4F, this completes in seconds.
+- During the 10-minute collection window, each audio frame is processed through the frozen AcousticEncoder and the 32D embedding stored (~75KB total — well within the 786KB SRAM budget). Raw audio is discarded after each frame.
+- After collection, FsSeparator is trained on all stored embeddings for a fixed 50 epochs. At ~24–48 ms/epoch on Cortex-M33 @ 160 MHz (~2.4M MACs/epoch), 50 epochs takes ~1–2.5 seconds.
 
 Training steps:
 1. Forward pass all training embeddings → compute centroid `c = mean(f_s(x))`, then freeze it.

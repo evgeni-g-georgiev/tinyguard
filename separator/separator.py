@@ -58,7 +58,7 @@ def train_fs(
     Trains for a fixed number of epochs on all available data — no val split or
     early stopping. This reflects the on-device reality: embeddings are buffered
     during the 10-minute collection window (~75KB), then training runs for a
-    fixed epoch count after collection (~70ms/epoch on Cortex-M4F).
+    fixed epoch count after collection (~24–48 ms/epoch on Cortex-M33 @ 160 MHz).
 
     Args:
         embeddings:   (N, input_dim) float32 — all frames from all normal clips stacked.
