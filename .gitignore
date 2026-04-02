@@ -11,16 +11,13 @@ group_env/
 # Claude
 .claude/
 
-# Outputs (regeneratable)
-outputs/
-
-# Model weights (downloaded, not tracked)
-/models/
-
 # OS
 .DS_Store
 
 # IDE
 .vscode/
 .idea/
-/data/
+
+# Large datasets (downloaded separately)
+/data/fsd50k/
+/data/mimii/

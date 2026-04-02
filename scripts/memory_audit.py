@@ -24,7 +24,7 @@ import torch
 import torch.nn as nn
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from src.models.cnn import AcousticEncoder
+from distillation.cnn import AcousticEncoder
 
 # ── hardware limits ─────────────────────────────────────────────────────────
 
