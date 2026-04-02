@@ -114,6 +114,9 @@ def run_machine(
     n_rounds = splits[key]["n_rounds"]
 
     # ── Timeline construction ──────────────────────────────────────────────
+    # events:   one entry per scored clip — used for scatter plot and metrics
+    # segments: one entry per monitoring window — used to draw shaded regions
+    # t:        monotonically increasing wall-clock time (seconds) across all rounds
     events   = []   # {t, score, phase, round}
     segments = []   # {phase, round, t_start, t_end}
     t        = 0.0  # running time in seconds
@@ -121,6 +124,9 @@ def run_machine(
     monitor_clips = len(test_normal_paths) // n_rounds
 
     def add_segment(phase, round_idx, wav_paths):
+        # Closure over events, segments, t — advances the shared timeline as
+        # clips are processed. t is stored in seconds internally; converted to
+        # minutes when written into events/segments for plotting.
         nonlocal t
         seg_start = t
         emb_list  = []
@@ -145,6 +151,8 @@ def run_machine(
         norm_scores = add_segment("normal",  r + 1, norm_paths)
         anom_scores = add_segment("anomaly", r + 1, anom_paths)
 
+        # First clip index whose score exceeds the threshold — simulates the
+        # moment the device would raise an alert. None if never detected.
         detection_idx = next(
             (i for i, s in enumerate(anom_scores) if s >= threshold), None
         )
@@ -188,6 +196,8 @@ def plot_machine(result: dict, mtype: str, mid: str) -> str:
     false_alarm_pct = 100 * n_fps / n_norm_mon if n_norm_mon > 0 else 0
 
     try:
+        # ROC-AUC across all rounds: 0 = normal, 1 = anomaly
+        # try/except guards against degenerate cases (e.g. only one class present)
         auc_labels = [0] * len(train_evts) + [1] * len(anomaly_evts)
         auc_scores = [e["score"] for e in train_evts + anomaly_evts]
         auc = roc_auc_score(auc_labels, auc_scores)

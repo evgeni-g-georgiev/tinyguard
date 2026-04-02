@@ -57,10 +57,12 @@ def log_mel(frame: np.ndarray) -> np.ndarray:
 
 
 def embed_clip(wav_path: str, model: AcousticEncoder, device) -> np.ndarray | None:
+    """Return (n_frames, embedding_dim) float32 embeddings for one clip, or None if too short."""
     audio, _ = librosa.load(wav_path, sr=SAMPLE_RATE, mono=True)
     n_frames  = len(audio) // FRAME_LEN
     if n_frames == 0:
         return None
+    # Stack all frames into a batch and run a single forward pass for efficiency
     mels = np.stack([
         log_mel(audio[i * FRAME_LEN:(i + 1) * FRAME_LEN].astype(np.float32))
         for i in range(n_frames)
@@ -126,12 +128,14 @@ def main():
                 print(f"    No valid embeddings — skipping.")
                 continue
 
+            # Flatten all per-clip frame embeddings into a single matrix for SVDD training
             stacked = np.vstack(train_embs)   # (N_frames, 32)
 
-            # Train SVDD
+            # Train SVDD — returns the trained model and the fixed centroid
             model_fs, centroid = train_fs(stacked)
 
-            # Set threshold at 95th percentile of training scores
+            # Threshold: 95th percentile of training clip scores. Clips scoring
+            # above this at inference time are flagged as anomalous.
             train_scores = score_clips(train_embs, model_fs, centroid)
             threshold    = float(np.percentile(train_scores, THRESHOLD_PCT))
 

@@ -81,6 +81,10 @@ def main():
             norm_perm = list(rng.permutation([str(p) for p in normal_paths]))
             anom_perm = list(rng.permutation([str(p) for p in abnormal_paths]))
 
+            # Cap n_rounds by what the data can actually support:
+            #   - N_ROUNDS is the configured maximum
+            #   - second term: how many full monitoring windows fit in the remaining normal clips
+            #   - third term: how many full windows fit in the abnormal clips
             n_rounds = min(
                 N_ROUNDS,
                 (len(norm_perm) - TRAIN_CLIPS) // MONITOR_CLIPS,
@@ -93,7 +97,8 @@ def main():
                 missing.append(key)
                 continue
 
-            # Store paths relative to MIMII_ROOT for portability
+            # Store paths relative to MIMII_ROOT so the manifest is portable
+            # across machines with different absolute mount points.
             def rel(p):
                 return str(Path(p).relative_to(MIMII_ROOT))
 

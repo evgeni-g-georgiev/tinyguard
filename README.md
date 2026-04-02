@@ -183,9 +183,6 @@ tinyml/
 ├── inference/                   # On-device monitoring simulation
 │   └── run.py                   # Normal + anomaly rounds → plots + results.yaml
 │
-├── scripts/                     # Standalone utilities
-│   └── memory_audit.py          # Flash + SRAM budget audit
-│
 ├── preprocessing/outputs/       # fsd50k_cache/, pca/, mimii_splits/
 ├── distillation/outputs/        # student/ (checkpoint + curve), export/
 ├── separator/outputs/           # {mtype}_{mid}.pt × 16
@@ -215,10 +212,6 @@ python distillation/train.py --epochs 100 --batch 256 --lr 1e-3
 # ── On-device simulation ──────────────────────────────────────────────────────
 python separator/train.py                    # SVDD training, one artefact per machine
 python inference/run.py                      # monitoring simulation + plots
-
-# ── Utilities ─────────────────────────────────────────────────────────────────
-python scripts/memory_audit.py
-python scripts/memory_audit.py --tflite distillation/outputs/export/acoustic_encoder_int8.tflite
 ```
 
 All results (YAML summaries + PNG plots) are written to each stage's `outputs/` subfolder. Re-running a stage overwrites its previous outputs.

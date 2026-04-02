@@ -88,7 +88,9 @@ def train_fs(
     optimiser = torch.optim.SGD(model.parameters(), lr=lr, weight_decay=weight_decay)
 
     # Initialise centroid: mean output of a single forward pass through all
-    # training data. Fixed for the rest of training.
+    # training data. Fixed for the rest of training — the network learns to
+    # pull normal embeddings toward this fixed point rather than chasing a
+    # moving target, which is the standard Deep SVDD setup.
     model.eval()
     with torch.no_grad():
         projs    = torch.cat([model(batch[0].to(device)) for batch in train_loader])
@@ -104,6 +106,9 @@ def train_fs(
         for (batch,) in train_loader:
             batch = batch.to(device)
             optimiser.zero_grad()
+            # SVDD loss: mean squared L2 distance of each sample's projection
+            # from the fixed centroid. Minimising this compacts normal data
+            # around c; anomalies at test time land far from c.
             loss = ((model(batch) - centroid) ** 2).sum(dim=1).mean()
             loss.backward()
             optimiser.step()
@@ -118,6 +123,8 @@ def train_fs(
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            # Deep copy weights at the best val loss so we can restore them
+            # after early stopping — avoids saving/loading from disk.
             best_state    = {k: v.clone() for k, v in model.state_dict().items()}
             stale         = 0
         else:

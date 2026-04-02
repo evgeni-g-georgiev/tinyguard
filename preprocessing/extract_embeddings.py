@@ -54,6 +54,9 @@ PCA_MAX_FRAMES = 100_000   # subsample cap for PCA fitting
 def load_yamnet(path: str):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
+        # experimental_preserve_all_tensors=True is required to read intermediate
+        # tensors (e.g. the embedding layer at index EMB_IDX) after invoke().
+        # Without it, only the final output tensor is accessible.
         interp = Interpreter(str(path), experimental_preserve_all_tensors=True)
     interp.allocate_tensors()
     return interp, interp.get_input_details()
@@ -71,6 +74,9 @@ def embed_clip(wav_path: str, interp, input_details) -> np.ndarray | None:
         interp.set_tensor(input_details[0]["index"], frame)
         interp.invoke()
         raw    = interp.get_tensor(EMB_IDX).squeeze()
+        # Dequantise INT8 output back to float32:
+        # YAMNet's embedding tensor is quantised; EMB_ZP and EMB_SCALE are read
+        # from the tensor's quantisation parameters in the .tflite flatbuffer.
         out[i] = (raw.astype(np.float32) - EMB_ZP) * EMB_SCALE
     return out
 
@@ -129,6 +135,8 @@ def main():
     else:
         n = all_embeddings.shape[0]
         if n > PCA_MAX_FRAMES:
+            # PCA memory scales quadratically with n_samples; subsample to cap
+            # memory and runtime without meaningfully affecting the fit.
             rng      = np.random.default_rng(42)
             idx      = rng.choice(n, size=PCA_MAX_FRAMES, replace=False)
             fit_data = all_embeddings[idx]
