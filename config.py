@@ -51,3 +51,4 @@ N_ROUNDS        = 3
 CLIP_SECS       = 10.0
 THRESHOLD_PCT   = 95
 SEED            = 42
+FS_EPOCHS       = 50     # fixed epoch count for on-device SVDD training

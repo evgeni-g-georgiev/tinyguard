@@ -30,7 +30,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, TensorDataset, random_split
+from torch.utils.data import DataLoader, TensorDataset
 
 
 class FsSeparator(nn.Module):
@@ -48,23 +48,24 @@ def train_fs(
     embeddings: np.ndarray,
     lr: float = 0.01,
     weight_decay: float = 1e-4,
-    epochs: int = 100,
-    patience: int = 20,
-    batch_size: int = 256,
-    val_frac: float = 0.1,
+    epochs: int = 50,
+    batch_size: int = 32,
     seed: int = 42,
 ) -> tuple[FsSeparator, np.ndarray]:
     """
     Train Deep SVDD on normal-clip embeddings.
 
+    Trains for a fixed number of epochs on all available data — no val split or
+    early stopping. This reflects the on-device reality: embeddings are buffered
+    during the 10-minute collection window (~75KB), then training runs for a
+    fixed epoch count after collection (~70ms/epoch on Cortex-M4F).
+
     Args:
         embeddings:   (N, input_dim) float32 — all frames from all normal clips stacked.
         lr:           SGD learning rate.
         weight_decay: L2 regularisation — prevents hypersphere collapse.
-        epochs:       maximum training epochs.
-        patience:     early stopping patience (epochs without val improvement).
+        epochs:       fixed number of training epochs.
         batch_size:   mini-batch size.
-        val_frac:     fraction of data held out for early stopping.
         seed:         RNG seed for reproducibility.
 
     Returns:
@@ -74,18 +75,14 @@ def train_fs(
     torch.manual_seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    X = torch.tensor(embeddings, dtype=torch.float32)
-    n_val   = max(1, int(len(X) * val_frac))
-    n_train = len(X) - n_val
-    generator = torch.Generator().manual_seed(seed)
-    train_set, val_set = random_split(TensorDataset(X), [n_train, n_val],
-                                      generator=generator)
-    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
-    val_loader   = DataLoader(val_set,   batch_size=batch_size)
+    X            = torch.tensor(embeddings, dtype=torch.float32)
+    train_loader = DataLoader(TensorDataset(X), batch_size=batch_size, shuffle=True)
 
     input_dim = embeddings.shape[1]
     model     = FsSeparator(input_dim=input_dim).to(device)
     optimiser = torch.optim.SGD(model.parameters(), lr=lr, weight_decay=weight_decay)
+    # Cosine LR decay over fixed epochs — large updates early, fine-tuning at the end
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=epochs)
 
     # Initialise centroid: mean output of a single forward pass through all
     # training data. Fixed for the rest of training — the network learns to
@@ -96,11 +93,7 @@ def train_fs(
         projs    = torch.cat([model(batch[0].to(device)) for batch in train_loader])
         centroid = projs.mean(dim=0)   # (output_dim,)
 
-    # Training loop with early stopping
-    best_val_loss = float("inf")
-    best_state    = {k: v.clone() for k, v in model.state_dict().items()}
-    stale         = 0
-
+    # Fixed-epoch training loop
     model.train()
     for _ in range(epochs):
         for (batch,) in train_loader:
@@ -112,27 +105,8 @@ def train_fs(
             loss = ((model(batch) - centroid) ** 2).sum(dim=1).mean()
             loss.backward()
             optimiser.step()
+        scheduler.step()
 
-        model.eval()
-        with torch.no_grad():
-            val_loss = float(np.mean([
-                ((model(b[0].to(device)) - centroid) ** 2).sum(dim=1).mean().item()
-                for b in val_loader
-            ]))
-        model.train()
-
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            # Deep copy weights at the best val loss so we can restore them
-            # after early stopping — avoids saving/loading from disk.
-            best_state    = {k: v.clone() for k, v in model.state_dict().items()}
-            stale         = 0
-        else:
-            stale += 1
-            if stale >= patience:
-                break
-
-    model.load_state_dict(best_state)
     model.eval()
     return model.cpu(), centroid.cpu().numpy()
 

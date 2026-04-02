@@ -2,6 +2,16 @@
 """
 train.py — Simulate the on-device 10-minute SVDD training window.
 
+Realistic on-device flow being simulated:
+  1. Collect phase (10 min): each audio frame is processed through the frozen
+     AcousticEncoder in real time and the 32D embedding stored (~75KB total).
+     Raw audio and mel spectrograms are discarded after each frame.
+  2. Train phase: FsSeparator (Deep SVDD) is trained on all stored embeddings
+     for a fixed number of epochs. At ~70ms/epoch on Cortex-M4F, 50 epochs
+     takes under 5 seconds.
+  3. Threshold is set at the 95th percentile of training scores, then the
+     device switches to continuous monitoring.
+
 For each of the 16 MIMII machines, loads the pre-determined training clips
 from the splits manifest, extracts 32D embeddings via the frozen AcousticEncoder,
 trains FsSeparator (Deep SVDD), and saves the trained artefact.
@@ -40,7 +50,7 @@ from config import (
     STUDENT_DIR, MIMII_SPLITS, SEPARATOR_DIR, MIMII_ROOT,
     MACHINE_TYPES, MACHINE_IDS,
     SAMPLE_RATE, FRAME_LEN, N_FFT, HOP_LENGTH, N_MELS, LOG_OFFSET,
-    THRESHOLD_PCT,
+    THRESHOLD_PCT, FS_EPOCHS,
 )
 from distillation.cnn import AcousticEncoder
 from separator.separator import train_fs, score_clips
@@ -132,7 +142,7 @@ def main():
             stacked = np.vstack(train_embs)   # (N_frames, 32)
 
             # Train SVDD — returns the trained model and the fixed centroid
-            model_fs, centroid = train_fs(stacked)
+            model_fs, centroid = train_fs(stacked, epochs=FS_EPOCHS)
 
             # Threshold: 95th percentile of training clip scores. Clips scoring
             # above this at inference time are flagged as anomalous.
