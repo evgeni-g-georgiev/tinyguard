@@ -23,6 +23,9 @@ MIMII_SPLITS  = ROOT / "preprocessing/outputs/mimii_splits/splits.json"
 STUDENT_DIR   = ROOT / "distillation/outputs/student"
 SEPARATOR_DIR = ROOT / "separator/outputs/separator"
 INFERENCE_DIR = ROOT / "inference/outputs/inference"
+GMM_DIR       = ROOT / "gmm/outputs/gmm"
+GMM_N_MELS     = 128   # paper (Guan et al. 2023) uses 128 Mel-filter banks
+GMM_HOP_LENGTH = 512   # 50 % overlap of N_FFT=1024, per paper implementation
 
 # ── Audio constants ───────────────────────────────────────────────────────────
 SAMPLE_RATE  = 16_000
