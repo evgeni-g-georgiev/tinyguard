@@ -29,6 +29,7 @@ from pathlib import Path
 import shutil 
 import argparse 
 import yaml 
+import os 
 
 # ── Data Classes ────────────────────────────────────────────────────────
 
@@ -227,7 +228,8 @@ def _copy_files(files: tuple[Path, ...], dest_dir: Path) -> None:
     """Copy a tuple of files into dest_dir, creating it if needed."""                 
     dest_dir.mkdir(parents=True, exist_ok=True)                                       
     for f in files:                                                                   
-        shutil.copy2(f, dest_dir / f.name)                                            
+        # shutil.copy2(f, dest_dir / f.name)       
+        os.symlink(f.resolve(), dest_dir / f.name)    #NOTE: this makes the split folder just pointers for now so that we can still use existing code                                 
                                                                                     
                                                                                     
 def execute_split(plan: NodeSplitPlan, splits_dir: Path) -> None:
