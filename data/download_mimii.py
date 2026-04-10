@@ -1,198 +1,152 @@
-#!/usr/bin/env python3
 """
-download_mimii.py — Download and extract the MIMII dataset (6 dB SNR, all 4 machine types).
-
-Downloads from Zenodo record 3384388. Each machine type is a separate zip (~6–10 GB).
-Total download: ~30 GB.
-
-Usage:
-    python data/download_mimii.py
-
-Requirements:
-    unzip must be installed: sudo apt install unzip
+download_mimii.py — Download the MIMII 6 dB zip files (approx 30 GB total).
 """
 
 import hashlib
-import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import MIMII_ROOT, MACHINE_TYPES, MACHINE_IDS
-
-# ── config ─────────────────────────────────────────────────────────────────
-
-OUTPUT_DIR = str(MIMII_ROOT)
-
-# Zenodo record 3384388 — MIMII 6 dB files.
-# MD5 checksums can be verified at: https://zenodo.org/records/3384388
-FILES = [
-    {
-        "name": "6_dB_fan.zip",
-        "url":  "https://zenodo.org/api/records/3384388/files/6_dB_fan.zip/content",
-        "md5":  None,   # fill in from Zenodo record page if strict verification is needed
-        "size": "~9.5 GB",
-        "machine_type": "fan",
-    },
-    {
-        "name": "6_dB_pump.zip",
-        "url":  "https://zenodo.org/api/records/3384388/files/6_dB_pump.zip/content",
-        "md5":  None,
-        "size": "~7.1 GB",
-        "machine_type": "pump",
-    },
-    {
-        "name": "6_dB_slider.zip",
-        "url":  "https://zenodo.org/api/records/3384388/files/6_dB_slider.zip/content",
-        "md5":  None,
-        "size": "~6.6 GB",
-        "machine_type": "slider",
-    },
-    {
-        "name": "6_dB_valve.zip",
-        "url":  "https://zenodo.org/api/records/3384388/files/6_dB_valve.zip/content",
-        "md5":  None,
-        "size": "~6.4 GB",
-        "machine_type": "valve",
-    },
-]
+from config import MIMII_ARCHIVE_DIR
 
 
-# ── helpers ─────────────────────────────────────────────────────────────────
+def _mimii_6db_files():
+    """Return metadata for the MIMII 6 dB files that should be downloaded."""
+    return [
+        {
+            "name": "6_dB_fan.zip",
+            "url": "https://zenodo.org/api/records/3384388/files/6_dB_fan.zip/content",
+            "md5": None,
+            "size": "9.5 GB",
+            "machine_type": "fan",
+            "signal_to_noise_ratio": "6 dB",
+        },
+        {
+            "name": "6_dB_pump.zip",
+            "url": "https://zenodo.org/api/records/3384388/files/6_dB_pump.zip/content",
+            "md5": None,
+            "size": "7.1 GB",
+            "machine_type": "pump",
+            "signal_to_noise_ratio": "6 dB",
+        },
+        {
+            "name": "6_dB_slider.zip",
+            "url": "https://zenodo.org/api/records/3384388/files/6_dB_slider.zip/content",
+            "md5": None,
+            "size": "6.6 GB",
+            "machine_type": "slider",
+            "signal_to_noise_ratio": "6 dB",
+        },
+        {
+            "name": "6_dB_valve.zip",
+            "url": "https://zenodo.org/api/records/3384388/files/6_dB_valve.zip/content",
+            "md5": None,
+            "size": "6.4 GB",
+            "machine_type": "valve",
+            "signal_to_noise_ratio": "6 dB",
+        },
+    ]
 
-def check_unzip():
-    result = subprocess.run(["which", "unzip"], capture_output=True)
-    if result.returncode != 0:
-        print("ERROR: unzip not found. Install it with: sudo apt install unzip")
-        sys.exit(1)
+
+def _archive_path(mimii_file):
+    """Return the output path for a single archive."""
+    return MIMII_ARCHIVE_DIR / mimii_file["name"]
 
 
-def md5_file(path: str) -> str:
-    h = hashlib.md5()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(8 * 1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def download(url: str, dest: str):
-    """Download with wget — resumes partial downloads automatically."""
-    print(f"  Downloading to {dest} …")
-    subprocess.run(
-        ["wget", "--continue", "--progress=bar:force", "-O", dest, url],
-        check=True,
+def _print_file_summary(mimii_file):
+    """Print a short summary for one file."""
+    print(
+        f"{mimii_file['name']} | "
+        f"{mimii_file['size']} | "
+        f"{mimii_file['machine_type']} | "
+        f"{mimii_file['signal_to_noise_ratio']}"
     )
 
 
-def verify(path: str, expected_md5: str | None) -> bool:
+def _check_wget():
+    """Fail fast if wget is not installed."""
+    if shutil.which("wget") is None:
+        print("ERROR: wget not found. Install it and retry.")
+        sys.exit(1)
+
+
+def _md5_file(path):
+    """Compute the MD5 checksum for a file."""
+    digest = hashlib.md5()
+    with open(path, "rb") as file_obj:
+        for chunk in iter(lambda: file_obj.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _verify_file(path, expected_md5):
+    """Verify one downloaded file if a checksum is available."""
     if expected_md5 is None:
-        return True   # skip verification if checksum not provided
-    print(f"  Verifying {os.path.basename(path)} …", end=" ", flush=True)
-    actual = md5_file(path)
-    if actual == expected_md5:
+        return True
+
+    print(f"  Verifying {path.name} ...", end=" ", flush=True)
+    actual_md5 = _md5_file(path)
+
+    if actual_md5 == expected_md5:
         print("OK")
         return True
-    print(f"FAILED\n  Expected: {expected_md5}\n  Got:      {actual}")
+
+    print(f"FAILED\n  Expected: {expected_md5}\n  Got:      {actual_md5}")
     return False
 
 
-def extract_and_flatten(zip_path: str, machine_type: str):
-    """
-    Extract zip to a temp dir then move files into the expected layout:
-      data/mimii/{machine_type}/{machine_id}/{normal,abnormal}/*.wav
+def _download_file(url, dest):
+    """Download one file with resume support and a progress bar."""
+    print(f"  Downloading to {dest} ...")
+    subprocess.run(
+        ["wget", "--continue", "--progress=bar:force", "-O", str(dest), url],
+        check=True,
+    )
 
-    The MIMII zips contain an internal top-level folder (e.g. dev_data_fan_6dB/)
-    which is stripped during extraction.
-    """
-    import shutil
-    import tempfile
+def download_mimii():
+    """Download all MIMII 6 dB files and return their local paths."""
 
-    tmp = tempfile.mkdtemp(dir=OUTPUT_DIR)
-    try:
-        print(f"  Extracting {os.path.basename(zip_path)} …")
-        subprocess.run(["unzip", "-q", zip_path, "-d", tmp], check=True)
+    # Step 1: Create the output directory.
+    _check_wget()
+    MIMII_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
 
-        # Find the top-level folder inside the zip (varies by machine type)
-        top_dirs = [d for d in os.listdir(tmp) if os.path.isdir(os.path.join(tmp, d))]
-        if len(top_dirs) != 1:
-            raise RuntimeError(f"Expected one top-level dir in zip, found: {top_dirs}")
-        src_root = os.path.join(tmp, top_dirs[0])
+    # Step 2: print a summary of what will be downloaded.
+    print(f"\n{'-' * 60}")
+    print("Downloading the MIMII dataset — 6 dB signal-to-noise ratio, 4 machine types (approx. 30 GB total)")
+    print(f"Destination: {MIMII_ARCHIVE_DIR}/")
+    print(f"{'-' * 60}\n")
 
-        # Move each machine_id folder into place
-        for mid in os.listdir(src_root):
-            src = os.path.join(src_root, mid)
-            if not os.path.isdir(src):
+    file_paths = []
+
+    # Step 3: loop over each MIMII zip file and handle download or skip logic.
+    for mimii_file in _mimii_6db_files():
+        dest = _archive_path(mimii_file)
+        _print_file_summary(mimii_file)
+
+        # Step 4: if the file already exists, verify it before deciding to skip.
+        if dest.exists():
+            print("File already exists. Verifying the file.")
+            if _verify_file(dest, mimii_file["md5"]):
+                file_paths.append(dest)
                 continue
-            dst = os.path.join(OUTPUT_DIR, machine_type, mid)
-            if os.path.exists(dst):
-                print(f"    {machine_type}/{mid} already exists — skipping move.")
-                continue
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            shutil.move(src, dst)
-            n_wav = sum(1 for _, _, fs in os.walk(dst) for f in fs if f.endswith(".wav"))
-            print(f"    → {machine_type}/{mid}  ({n_wav} WAVs)")
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+            print("Checksum mismatch, re-downloading the file.")
 
+        # Step 5: download the file if it is missing or failed verification.
+        _download_file(mimii_file["url"], dest)
 
-# ── main ────────────────────────────────────────────────────────────────────
-
-def main():
-    check_unzip()
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-    print(f"\n{'─' * 60}")
-    print(f"  MIMII dataset — 6 dB SNR, 4 machine types (~30 GB total)")
-    print(f"  Destination: {OUTPUT_DIR}/")
-    print(f"{'─' * 60}\n")
-
-    for f in FILES:
-        mtype   = f["machine_type"]
-        dest    = os.path.join(OUTPUT_DIR, f["name"])
-
-        # Check if this machine type is already fully extracted
-        extracted_ids = [
-            mid for mid in MACHINE_IDS
-            if os.path.isdir(os.path.join(OUTPUT_DIR, mtype, mid))
-        ]
-        if len(extracted_ids) == len(MACHINE_IDS):
-            print(f"  {mtype}: all {len(MACHINE_IDS)} machine IDs already present — skipping.")
+        # Step 6: verify the downloaded file before recording it as complete.
+        if not _verify_file(dest, mimii_file["md5"]):
+            print(f"ERROR: {dest.name} is corrupt. Delete the file and retry.")
             continue
 
-        print(f"\n  {f['name']} ({f['size']})")
+        file_paths.append(dest)
 
-        if os.path.exists(dest):
-            print(f"  Zip already present — skipping download.")
-        else:
-            download(f["url"], dest)
-
-        if not verify(dest, f["md5"]):
-            print(f"  ERROR: {f['name']} checksum mismatch. Delete and retry.")
-            continue
-
-        extract_and_flatten(dest, mtype)
-
-        # Remove zip to save disk space after successful extraction
-        os.remove(dest)
-        print(f"  Removed {f['name']} (extraction complete)")
-
-    # ── Summary ───────────────────────────────────────────────────────────
-    print(f"\n{'─' * 60}")
-    print(f"  Summary: {OUTPUT_DIR}/")
-    total_wavs = 0
-    for mtype in MACHINE_TYPES:
-        for mid in MACHINE_IDS:
-            path = os.path.join(OUTPUT_DIR, mtype, mid)
-            if os.path.isdir(path):
-                n = sum(1 for _, _, fs in os.walk(path) for f in fs if f.endswith(".wav"))
-                total_wavs += n
-                print(f"    {mtype}/{mid}: {n} WAVs")
-            else:
-                print(f"    {mtype}/{mid}: MISSING")
-    print(f"  Total: {total_wavs} WAV files")
-    print(f"{'─' * 60}\n")
+    # Step 7: print the final status and return the downloaded file paths.
+    print(f"\nAll files downloaded and saved to '{MIMII_ARCHIVE_DIR}/'.")
+    return file_paths
 
 
 if __name__ == "__main__":
-    main()
+    download_mimii()

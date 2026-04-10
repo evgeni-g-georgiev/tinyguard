@@ -21,3 +21,5 @@ group_env/
 # Large datasets (downloaded separately)
 /data/fsd50k/
 /data/mimii/
+/data/archives/
+/data/tmp/

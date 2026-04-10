@@ -8,3 +8,5 @@ pyyaml
 tqdm
 soundfile
 ai-edge-litert
+wget
+kagglehub

@@ -1,145 +1,131 @@
 #!/usr/bin/env python3
 """
-download_fsd50k.py — Download and extract the FSD50K evaluation set (~6.2 GB).
-
-Downloads to data/fsd50k/ alongside the MIMII data.
-The eval set is a 2-part split zip; 7z is used to extract it.
-
-Usage:
-    python data/download_fsd50k.py
-
-Requirements:
-    7z must be installed: sudo apt install p7zip-full
+download_fsd50k.py — Download the FSD50K eval zip files (approx. 6.2 GB total).
 """
 
 import hashlib
-import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import FSD50K_AUDIO
-
-# ── config ─────────────────────────────────────────────────────────────────
-
-OUTPUT_DIR    = str(FSD50K_AUDIO.parent)   # data/fsd50k/
-EXTRACTED_DIR = FSD50K_AUDIO.name          # FSD50K.eval_audio
-
-FILES = [
-    {
-        "name": "FSD50K.eval_audio.z01",
-        "url":  "https://zenodo.org/api/records/4060432/files/FSD50K.eval_audio.z01/content",
-        "md5":  "3090670eaeecc013ca1ff84fe4442aeb",
-        "size": "3.2 GB",
-    },
-    {
-        "name": "FSD50K.eval_audio.zip",
-        "url":  "https://zenodo.org/api/records/4060432/files/FSD50K.eval_audio.zip/content",
-        "md5":  "6fa47636c3a3ad5c7dfeba99f2637982",
-        "size": "3.0 GB",
-    },
-]
-
-EXTRACT_ENTRY = "FSD50K.eval_audio.zip"   # 7z uses the .zip as the entry point
+from config import FSD50K_ARCHIVE_DIR
 
 
-# ── helpers ─────────────────────────────────────────────────────────────────
+def _fsd50k_files():
+    """Return metadata for the FSD50K files that should be downloaded."""
+    return [
+        {
+            "name": "FSD50K.eval_audio.z01",
+            "url":  "https://zenodo.org/api/records/4060432/files/FSD50K.eval_audio.z01/content",
+            "md5":  "3090670eaeecc013ca1ff84fe4442aeb",
+            "size": "3.2 GB",
+        },
+        {
+            "name": "FSD50K.eval_audio.zip",
+            "url":  "https://zenodo.org/api/records/4060432/files/FSD50K.eval_audio.zip/content",
+            "md5":  "6fa47636c3a3ad5c7dfeba99f2637982",
+            "size": "3.0 GB",
+        },
+    ]
 
-def check_7z():
-    result = subprocess.run(["which", "7z"], capture_output=True)
-    if result.returncode != 0:
-        print("ERROR: 7z not found. Install it with: sudo apt install p7zip-full")
+def _file_path(fsd50k_file):
+    """Return the output path for a single FSD50K file."""
+    return FSD50K_ARCHIVE_DIR / fsd50k_file["name"]
+
+
+def _print_file_summary(fsd50k_file):
+    """Print a short summary for one file."""
+    print(f"{fsd50k_file['name']} | {fsd50k_file['size']}")
+
+
+def _check_wget():
+    """Fail fast if wget is not installed."""
+    if shutil.which("wget") is None:
+        print("ERROR: wget not found. Install it and retry.")
         sys.exit(1)
 
 
-def md5_file(path: str) -> str:
-    h = hashlib.md5()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(8 * 1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
+def _md5_file(path):
+    """Compute the MD5 checksum for a file."""
+    digest = hashlib.md5()
+    with open(path, "rb") as file_obj:
+        for chunk in iter(lambda: file_obj.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
-def download(url: str, dest: str):
-    """Download with wget — resumes partial downloads automatically."""
-    print(f"  Downloading to {dest} …")
-    subprocess.run(
-        ["wget", "--continue", "--progress=bar:force", "-O", dest, url],
-        check=True,
-    )
+def _verify_file(path, expected_md5):
+    """Verify one downloaded file."""
+    print(f"  Verifying {path.name} ...", end=" ", flush=True)
+    actual_md5 = _md5_file(path)
 
-
-def verify(path: str, expected_md5: str) -> bool:
-    print(f"  Verifying {os.path.basename(path)} …", end=" ", flush=True)
-    actual = md5_file(path)
-    if actual == expected_md5:
+    if actual_md5 == expected_md5:
         print("OK")
         return True
-    print(f"FAILED\n  Expected: {expected_md5}\n  Got:      {actual}")
+
+    print(f"FAILED\n  Expected: {expected_md5}\n  Got:      {actual_md5}")
     return False
 
 
-def extract(zip_path: str, output_dir: str):
-    """Extract split zip using 7z. Automatically finds .z01 part."""
-    print(f"  Extracting {os.path.basename(zip_path)} …")
+def _download_file(url, dest):
+    """Download one file with resume support and a progress bar."""
+    print(f"  Downloading to {dest} ...")
     subprocess.run(
-        ["7z", "x", zip_path, f"-o{output_dir}", "-y"],
+        ["wget", "--continue", "--progress=bar:force", "-O", str(dest), url],
         check=True,
     )
 
 
-# ── main ────────────────────────────────────────────────────────────────────
+def download_fsd50k():
+    """Download all FSD50K eval zip files and return their local paths."""
 
-def main():
-    check_7z()
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    # Step 1: create the output directory.
+    _check_wget()
+    FSD50K_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
 
-    # ── Download ──────────────────────────────────────────────────────────
-    print(f"\n{'─' * 60}")
-    print(f"  FSD50K eval set  (~6.2 GB total, 2 parts)")
-    print(f"  Destination: {OUTPUT_DIR}/")
-    print(f"{'─' * 60}\n")
+    # Step 2: print a summary of what will be downloaded.
+    print(f"\n{'-' * 60}")
+    print("Downloading the FSD50K eval set (approx. 6.2 GB total)")
+    print(f"Destination: {FSD50K_ARCHIVE_DIR}/")
+    print(f"{'-' * 60}\n")
 
+    file_paths = []
     all_ok = True
-    for f in FILES:
-        dest = os.path.join(OUTPUT_DIR, f["name"])
 
-        if os.path.exists(dest):
-            print(f"  {f['name']} ({f['size']}) — already present, verifying …")
-            if verify(dest, f["md5"]):
+    # Step 3: loop over each file and handle download or skip logic.
+    for fsd50k_file in _fsd50k_files():
+        dest = _file_path(fsd50k_file)
+        _print_file_summary(fsd50k_file)
+
+        # Step 4: if the file already exists, verify it before deciding to skip.
+        if dest.exists():
+            print("File already exists. Verifying the file.")
+            if _verify_file(dest, fsd50k_file["md5"]):
+                file_paths.append(dest)
                 continue
-            print("  Checksum mismatch — re-downloading.")
+            print("Checksum mismatch, re-downloading the file.")
 
-        print(f"\n  {f['name']} ({f['size']})")
-        download(f["url"], dest)
-        if not verify(dest, f["md5"]):
+        # Step 5: download the file if it is missing or failed verification.
+        _download_file(fsd50k_file["url"], dest)
+
+        # Step 6: verify the downloaded file before recording it as complete.
+        if not _verify_file(dest, fsd50k_file["md5"]):
+            print(f"ERROR: {dest.name} is corrupt. Delete the file and retry.")
             all_ok = False
-            print(f"  ERROR: {f['name']} is corrupt. Delete it and retry.")
+            continue
 
+        file_paths.append(dest)
+
+    # Step 7: stop early if any file failed verification.
     if not all_ok:
-        print("\nDownload failed — fix errors above before extracting.")
+        print("\nDownload failed. Fix the errors above before extraction.")
         sys.exit(1)
 
-    # ── Extract ───────────────────────────────────────────────────────────
-    extracted_path = os.path.join(OUTPUT_DIR, EXTRACTED_DIR)
-    if os.path.isdir(extracted_path):
-        n = sum(1 for _, _, files in os.walk(extracted_path) for _ in files)
-        print(f"\n  {EXTRACTED_DIR}/ already exists ({n} files) — skipping extraction.")
-    else:
-        print(f"\n  Extracting split zip …")
-        extract(os.path.join(OUTPUT_DIR, EXTRACT_ENTRY), OUTPUT_DIR)
-
-    # ── Summary ───────────────────────────────────────────────────────────
-    wav_count = sum(
-        1 for _, _, files in os.walk(extracted_path)
-        for f in files if f.endswith(".wav")
-    )
-    print(f"\n{'─' * 60}")
-    print(f"  Done.")
-    print(f"  Audio files: {wav_count} WAVs in {extracted_path}/")
-    print(f"{'─' * 60}\n")
+    print(f"\nAll files downloaded and saved to '{FSD50K_ARCHIVE_DIR}/'.")
+    return file_paths
 
 
 if __name__ == "__main__":
-    main()
+    download_fsd50k()

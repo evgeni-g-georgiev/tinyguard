@@ -10,8 +10,14 @@ from pathlib import Path
 ROOT = Path(__file__).parent
 
 # ── Data ──────────────────────────────────────────────────────────────────────
-FSD50K_AUDIO  = ROOT / "data/fsd50k/FSD50K.eval_audio"
-MIMII_ROOT    = ROOT / "data/mimii"
+DATA_ARCHIVE_DIR = ROOT / "data/archives"
+MIMII_ARCHIVE_DIR = DATA_ARCHIVE_DIR / "mimii_archives"
+FSD50K_ARCHIVE_DIR = DATA_ARCHIVE_DIR / "fsd50k_archives"
+
+FSD50K_AUDIO = ROOT / "data/fsd50k/FSD50K.eval_audio"
+MIMII_ROOT = ROOT / "data/mimii"
+MIMII_TMP_DIR = ROOT / "data/tmp/mimii"
+
 
 # ── External models ───────────────────────────────────────────────────────────
 YAMNET_PATH   = ROOT / "data/yamnet/yamnet.tflite"
