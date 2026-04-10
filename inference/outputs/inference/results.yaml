@@ -1,41 +1,91 @@
 fan/id_00:
-  threshold: 0.01742
+  threshold: 0.0015
   n_rounds: 3
   rounds:
   - round: 1
-    n_false_pos: 1
+    n_false_pos: 2
     n_normal_clips: 30
     n_anom_clips: 30
     detected: true
-    detection_delay_secs: 100
-    detection_idx: 10
+    detection_delay_secs: 0
+    detection_idx: 0
   - round: 2
-    n_false_pos: 1
+    n_false_pos: 4
     n_normal_clips: 30
     n_anom_clips: 30
     detected: true
     detection_delay_secs: 10
     detection_idx: 1
   - round: 3
+    n_false_pos: 5
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 10
+    detection_idx: 1
+fan/id_02:
+  threshold: 0.00101
+  n_rounds: 3
+  rounds:
+  - round: 1
+    n_false_pos: 2
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 30
+    detection_idx: 3
+  - round: 2
     n_false_pos: 1
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 40
+    detection_idx: 4
+  - round: 3
+    n_false_pos: 2
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 10
+    detection_idx: 1
+fan/id_04:
+  threshold: 0.00063
+  n_rounds: 3
+  rounds:
+  - round: 1
+    n_false_pos: 4
     n_normal_clips: 30
     n_anom_clips: 30
     detected: true
     detection_delay_secs: 70
     detection_idx: 7
-fan/id_02:
-  threshold: 0.01862
-  n_rounds: 3
-  rounds:
-  - round: 1
-    n_false_pos: 1
+  - round: 2
+    n_false_pos: 5
     n_normal_clips: 30
     n_anom_clips: 30
     detected: true
-    detection_delay_secs: 80
-    detection_idx: 8
+    detection_delay_secs: 10
+    detection_idx: 1
+  - round: 3
+    n_false_pos: 5
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 20
+    detection_idx: 2
+fan/id_06:
+  threshold: 0.00258
+  n_rounds: 3
+  rounds:
+  - round: 1
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 0
+    detection_idx: 0
   - round: 2
-    n_false_pos: 2
+    n_false_pos: 1
     n_normal_clips: 30
     n_anom_clips: 30
     detected: true
@@ -46,14 +96,114 @@ fan/id_02:
     n_normal_clips: 30
     n_anom_clips: 30
     detected: true
-    detection_delay_secs: 20
-    detection_idx: 2
-fan/id_04:
-  threshold: 0.01852
+    detection_delay_secs: 0
+    detection_idx: 0
+pump/id_00:
+  threshold: 0.00158
   n_rounds: 3
   rounds:
   - round: 1
     n_false_pos: 2
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 50
+    detection_idx: 5
+  - round: 2
+    n_false_pos: 1
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 0
+    detection_idx: 0
+  - round: 3
+    n_false_pos: 3
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 30
+    detection_idx: 3
+pump/id_02:
+  threshold: 0.00164
+  n_rounds: 3
+  rounds:
+  - round: 1
+    n_false_pos: 3
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 10
+    detection_idx: 1
+  - round: 2
+    n_false_pos: 5
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 10
+    detection_idx: 1
+  - round: 3
+    n_false_pos: 3
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 10
+    detection_idx: 1
+pump/id_04:
+  threshold: 0.00685
+  n_rounds: 3
+  rounds:
+  - round: 1
+    n_false_pos: 2
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: false
+    detection_delay_secs: null
+    detection_idx: null
+  - round: 2
+    n_false_pos: 1
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: false
+    detection_delay_secs: null
+    detection_idx: null
+  - round: 3
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 210
+    detection_idx: 21
+pump/id_06:
+  threshold: 0.00447
+  n_rounds: 3
+  rounds:
+  - round: 1
+    n_false_pos: 3
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 140
+    detection_idx: 14
+  - round: 2
+    n_false_pos: 3
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 0
+    detection_idx: 0
+  - round: 3
+    n_false_pos: 5
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 0
+    detection_idx: 0
+slider/id_00:
+  threshold: 0.00792
+  n_rounds: 3
+  rounds:
+  - round: 1
+    n_false_pos: 0
     n_normal_clips: 30
     n_anom_clips: 30
     detected: true
@@ -64,167 +214,17 @@ fan/id_04:
     n_normal_clips: 30
     n_anom_clips: 30
     detected: true
-    detection_delay_secs: 10
-    detection_idx: 1
-  - round: 3
-    n_false_pos: 1
-    n_normal_clips: 30
-    n_anom_clips: 30
-    detected: true
-    detection_delay_secs: 20
-    detection_idx: 2
-fan/id_06:
-  threshold: 0.02326
-  n_rounds: 3
-  rounds:
-  - round: 1
-    n_false_pos: 2
-    n_normal_clips: 30
-    n_anom_clips: 30
-    detected: true
-    detection_delay_secs: 0
-    detection_idx: 0
-  - round: 2
-    n_false_pos: 3
-    n_normal_clips: 30
-    n_anom_clips: 30
-    detected: true
-    detection_delay_secs: 0
-    detection_idx: 0
-  - round: 3
-    n_false_pos: 5
-    n_normal_clips: 30
-    n_anom_clips: 30
-    detected: true
-    detection_delay_secs: 20
-    detection_idx: 2
-pump/id_00:
-  threshold: 0.04452
-  n_rounds: 3
-  rounds:
-  - round: 1
-    n_false_pos: 1
-    n_normal_clips: 30
-    n_anom_clips: 30
-    detected: true
-    detection_delay_secs: 0
-    detection_idx: 0
-  - round: 2
-    n_false_pos: 2
-    n_normal_clips: 30
-    n_anom_clips: 30
-    detected: true
-    detection_delay_secs: 40
-    detection_idx: 4
-  - round: 3
-    n_false_pos: 0
-    n_normal_clips: 30
-    n_anom_clips: 30
-    detected: true
     detection_delay_secs: 30
     detection_idx: 3
-pump/id_02:
-  threshold: 0.03316
-  n_rounds: 3
-  rounds:
-  - round: 1
-    n_false_pos: 5
-    n_normal_clips: 30
-    n_anom_clips: 30
-    detected: true
-    detection_delay_secs: 0
-    detection_idx: 0
-  - round: 2
-    n_false_pos: 3
-    n_normal_clips: 30
-    n_anom_clips: 30
-    detected: true
-    detection_delay_secs: 10
-    detection_idx: 1
-  - round: 3
-    n_false_pos: 2
-    n_normal_clips: 30
-    n_anom_clips: 30
-    detected: true
-    detection_delay_secs: 10
-    detection_idx: 1
-pump/id_04:
-  threshold: 0.06181
-  n_rounds: 3
-  rounds:
-  - round: 1
-    n_false_pos: 2
-    n_normal_clips: 30
-    n_anom_clips: 30
-    detected: true
-    detection_delay_secs: 0
-    detection_idx: 0
-  - round: 2
-    n_false_pos: 1
-    n_normal_clips: 30
-    n_anom_clips: 30
-    detected: true
-    detection_delay_secs: 10
-    detection_idx: 1
   - round: 3
     n_false_pos: 1
     n_normal_clips: 30
     n_anom_clips: 30
     detected: true
-    detection_delay_secs: 0
-    detection_idx: 0
-pump/id_06:
-  threshold: 0.03429
-  n_rounds: 3
-  rounds:
-  - round: 1
-    n_false_pos: 1
-    n_normal_clips: 30
-    n_anom_clips: 30
-    detected: true
-    detection_delay_secs: 20
-    detection_idx: 2
-  - round: 2
-    n_false_pos: 1
-    n_normal_clips: 30
-    n_anom_clips: 30
-    detected: true
-    detection_delay_secs: 50
-    detection_idx: 5
-  - round: 3
-    n_false_pos: 1
-    n_normal_clips: 30
-    n_anom_clips: 30
-    detected: true
-    detection_delay_secs: 50
-    detection_idx: 5
-slider/id_00:
-  threshold: 0.0312
-  n_rounds: 3
-  rounds:
-  - round: 1
-    n_false_pos: 2
-    n_normal_clips: 30
-    n_anom_clips: 30
-    detected: true
-    detection_delay_secs: 0
-    detection_idx: 0
-  - round: 2
-    n_false_pos: 3
-    n_normal_clips: 30
-    n_anom_clips: 30
-    detected: true
-    detection_delay_secs: 0
-    detection_idx: 0
-  - round: 3
-    n_false_pos: 2
-    n_normal_clips: 30
-    n_anom_clips: 30
-    detected: true
-    detection_delay_secs: 0
-    detection_idx: 0
+    detection_delay_secs: 60
+    detection_idx: 6
 slider/id_02:
-  threshold: 0.03645
+  threshold: 0.00605
   n_rounds: 3
   rounds:
   - round: 1
@@ -242,57 +242,14 @@ slider/id_02:
     detection_delay_secs: 0
     detection_idx: 0
   - round: 3
-    n_false_pos: 1
+    n_false_pos: 0
     n_normal_clips: 30
     n_anom_clips: 30
     detected: true
     detection_delay_secs: 0
     detection_idx: 0
 slider/id_04:
-  threshold: 0.03031
-  n_rounds: 3
-  rounds:
-  - round: 1
-    n_false_pos: 3
-    n_normal_clips: 30
-    n_anom_clips: 30
-    detected: true
-    detection_delay_secs: 70
-    detection_idx: 7
-  - round: 2
-    n_false_pos: 1
-    n_normal_clips: 30
-    n_anom_clips: 30
-    detected: true
-    detection_delay_secs: 20
-    detection_idx: 2
-  - round: 3
-    n_false_pos: 2
-    n_normal_clips: 30
-    n_anom_clips: 30
-    detected: true
-    detection_delay_secs: 10
-    detection_idx: 1
-slider/id_06:
-  threshold: 0.03435
-  n_rounds: 2
-  rounds:
-  - round: 1
-    n_false_pos: 2
-    n_normal_clips: 30
-    n_anom_clips: 30
-    detected: true
-    detection_delay_secs: 110
-    detection_idx: 11
-  - round: 2
-    n_false_pos: 0
-    n_normal_clips: 30
-    n_anom_clips: 30
-    detected: true
-    detection_delay_secs: 50
-    detection_idx: 5
-valve/id_00:
-  threshold: 0.03791
+  threshold: 0.00522
   n_rounds: 3
   rounds:
   - round: 1
@@ -303,21 +260,64 @@ valve/id_00:
     detection_delay_secs: null
     detection_idx: null
   - round: 2
-    n_false_pos: 0
+    n_false_pos: 3
     n_normal_clips: 30
     n_anom_clips: 30
     detected: true
-    detection_delay_secs: 90
-    detection_idx: 9
+    detection_delay_secs: 50
+    detection_idx: 5
+  - round: 3
+    n_false_pos: 2
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: false
+    detection_delay_secs: null
+    detection_idx: null
+slider/id_06:
+  threshold: 0.00391
+  n_rounds: 2
+  rounds:
+  - round: 1
+    n_false_pos: 3
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 70
+    detection_idx: 7
+  - round: 2
+    n_false_pos: 7
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 110
+    detection_idx: 11
+valve/id_00:
+  threshold: 0.01047
+  n_rounds: 3
+  rounds:
+  - round: 1
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: false
+    detection_delay_secs: null
+    detection_idx: null
+  - round: 2
+    n_false_pos: 1
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 80
+    detection_idx: 8
   - round: 3
     n_false_pos: 1
     n_normal_clips: 30
     n_anom_clips: 30
     detected: true
-    detection_delay_secs: 120
-    detection_idx: 12
+    detection_delay_secs: 210
+    detection_idx: 21
 valve/id_02:
-  threshold: 0.03089
+  threshold: 0.01173
   n_rounds: 3
   rounds:
   - round: 1
@@ -332,62 +332,62 @@ valve/id_02:
     n_normal_clips: 30
     n_anom_clips: 30
     detected: true
-    detection_delay_secs: 180
-    detection_idx: 18
+    detection_delay_secs: 120
+    detection_idx: 12
+  - round: 3
+    n_false_pos: 1
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: false
+    detection_delay_secs: null
+    detection_idx: null
+valve/id_04:
+  threshold: 0.00854
+  n_rounds: 3
+  rounds:
+  - round: 1
+    n_false_pos: 2
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 90
+    detection_idx: 9
+  - round: 2
+    n_false_pos: 3
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 290
+    detection_idx: 29
   - round: 3
     n_false_pos: 2
     n_normal_clips: 30
     n_anom_clips: 30
     detected: true
-    detection_delay_secs: 0
-    detection_idx: 0
-valve/id_04:
-  threshold: 0.02709
-  n_rounds: 3
-  rounds:
-  - round: 1
-    n_false_pos: 4
-    n_normal_clips: 30
-    n_anom_clips: 30
-    detected: true
-    detection_delay_secs: 70
-    detection_idx: 7
-  - round: 2
-    n_false_pos: 4
-    n_normal_clips: 30
-    n_anom_clips: 30
-    detected: true
-    detection_delay_secs: 70
-    detection_idx: 7
-  - round: 3
-    n_false_pos: 3
-    n_normal_clips: 30
-    n_anom_clips: 30
-    detected: true
-    detection_delay_secs: 40
-    detection_idx: 4
+    detection_delay_secs: 80
+    detection_idx: 8
 valve/id_06:
-  threshold: 0.03522
+  threshold: 0.00794
   n_rounds: 3
   rounds:
   - round: 1
     n_false_pos: 1
     n_normal_clips: 30
     n_anom_clips: 30
-    detected: true
-    detection_delay_secs: 190
-    detection_idx: 19
+    detected: false
+    detection_delay_secs: null
+    detection_idx: null
   - round: 2
-    n_false_pos: 1
+    n_false_pos: 2
     n_normal_clips: 30
     n_anom_clips: 30
     detected: true
-    detection_delay_secs: 40
-    detection_idx: 4
+    detection_delay_secs: 100
+    detection_idx: 10
   - round: 3
     n_false_pos: 1
     n_normal_clips: 30
     n_anom_clips: 30
     detected: true
-    detection_delay_secs: 0
-    detection_idx: 0
+    detection_delay_secs: 30
+    detection_idx: 3

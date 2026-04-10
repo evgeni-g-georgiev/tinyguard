@@ -1,28 +1,27 @@
-#!/usr/bin/env python3
 """
-compute_mels.py — Compute and cache log-mel spectrograms for FSD50K eval set.
+compute_mels.py — Distillation stage 2: build student inputs from FSD50K.
 
-Processes files in the same sorted order as extract_embeddings.py and skips the
-same clips, so every mel frame at index i corresponds to teacher embedding i.
-An assertion checks the frame counts match before saving.
+This module computes the log-mel spectrogram cache used as input to the
+AcousticEncoder during distillation. It is primarily an internal stage of the
+distillation pipeline and is typically invoked by distillation/train.py after
+extract_embeddings.py, but it can also be run directly to rebuild the cache.
 
 Inputs
 ------
-  data/fsd50k/FSD50K.eval_audio/             WAV clips
-  outputs/fsd50k_cache/eval_embeddings.npy   teacher cache (must exist)
+  data/fsd50k/FSD50K.eval_audio/          WAV clips
+  distillation/outputs/fsd50k_cache/eval_embeddings.npy
 
-Output
-------
-  outputs/fsd50k_cache/eval_mels.npy   (N_frames, 1, 64, 61) float32  ~1.5 GB
+Outputs
+-------
+  distillation/outputs/fsd50k_cache/eval_mels.npy
 
-Usage
+Notes
 -----
-    python preprocessing/compute_mels.py
-
-Prerequisites
--------------
-    python preprocessing/extract_embeddings.py   (embeddings cache must exist)
+- Files are processed in the same order as extract_embeddings.py.
+- The mel cache must align one-to-one with the teacher embedding cache.
+- Cached outputs are reused if they already exist.
 """
+
 
 import glob
 import sys
@@ -60,7 +59,7 @@ def _load_teacher_frame_count(emb_path):
     """
     if not emb_path.exists():
         print("ERROR: Teacher embeddings cache not found.")
-        print("Run:  python preprocessing/extract_embeddings.py  first.")
+        print("Run:  python distillation/extract_embeddings.py  first.")
         sys.exit(1)
 
     return np.load(emb_path, mmap_mode="r").shape[0]

@@ -1,32 +1,29 @@
-#!/usr/bin/env python3
 """
-extract_embeddings.py — Extract YAMNet embeddings from FSD50K and fit PCA.
+extract_embeddings.py — Distillation stage 1: build teacher targets from FSD50K.
 
-Run once before compute_mels.py or distillation/train.py.
-Embeddings are cached to disk so YAMNet only runs over FSD50K once.
+This module extracts YAMNet embeddings from FSD50K audio and fits the PCA
+projection used for AcousticEncoder distillation. It is primarily an internal
+stage of the distillation pipeline and is typically invoked by
+distillation/train.py, but it can also be run directly to rebuild the cached
+teacher targets.
 
 Inputs
 ------
-  data/fsd50k/FSD50K.eval_audio/   WAV clips (run data/download_fsd50k.py first)
-  data/yamnet/yamnet.tflite        YAMNet TFLite model
+  data/fsd50k/FSD50K.eval_audio/          WAV clips
+  data/yamnet/yamnet.tflite               YAMNet TFLite model
 
 Outputs
 -------
-  outputs/fsd50k_cache/eval_embeddings.npy   (N_frames, 1024) float32  ~400 MB
-  outputs/pca/pca_components.npy             (32, 1024)       float32
-  outputs/pca/pca_mean.npy                   (1024,)          float32
+  distillation/outputs/fsd50k_cache/eval_embeddings.npy
+  distillation/outputs/pca/pca_components.npy
+  distillation/outputs/pca/pca_mean.npy
 
 Notes
 -----
-- PCA is fitted on FSD50K embeddings only — never on MIMII data.
-  Fitting on MIMII would be leakage since MIMII is the evaluation set.
-- If the cache already exists, embedding extraction is skipped.
-- If PCA outputs already exist, PCA fitting is skipped.
-
-Usage
------
-    python preprocessing/extract_embeddings.py
+- PCA is fitted on FSD50K embeddings only.
+- Cached outputs are reused if they already exist.
 """
+
 
 import glob
 import sys
@@ -204,7 +201,7 @@ def extract_embeddings():
     # Step 3: Ensure PCA outputs exist for projecting teacher embeddings to 32D
     _ensure_pca_outputs(all_embeddings, comp_path, mean_path)
 
-    print("\nDone. Ready to run preprocessing/compute_mels.py.")
+    print("\nDone. Ready to run distillation/compute_mels.py.")
 
     return {
         "embeddings_path": emb_path,

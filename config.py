@@ -23,8 +23,8 @@ MIMII_TMP_DIR = ROOT / "data/tmp/mimii"
 YAMNET_PATH   = ROOT / "data/yamnet/yamnet.tflite"
 
 # ── Outputs ───────────────────────────────────────────────────────────────────
-FSDCACHE_DIR  = ROOT / "preprocessing/outputs/fsd50k_cache"
-PCA_DIR       = ROOT / "preprocessing/outputs/pca"
+FSDCACHE_DIR  = ROOT / "distillation/outputs/fsd50k_cache"
+PCA_DIR       = ROOT / "distillation/outputs/pca"
 MIMII_SPLITS  = ROOT / "preprocessing/outputs/mimii_splits/splits.json"
 STUDENT_DIR   = ROOT / "distillation/outputs/student"
 SEPARATOR_DIR = ROOT / "separator/outputs/separator"
