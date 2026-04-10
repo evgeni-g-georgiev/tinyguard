@@ -63,7 +63,7 @@ def _build_preprocessor(config: dict):
 
     if name == "log_mel":
         from preprocessing.loader import load_audio, split_into_chunks
-        from preprocessing.compute_mels import log_mel
+        from preprocessing.separator_input import load_clip_log_mels
 
         embedder_name = config["frozen_embedder"]
         embedder_block = config.get(embedder_name) or {}
@@ -82,13 +82,7 @@ def _build_preprocessor(config: dict):
                 self.frame_seconds = audio_config["frame_seconds"]
 
             def process(self, wav_path: str) -> np.ndarray:
-                waveform, sr = load_audio(
-                    wav_path, self.sample_rate, mono=True,
-                )
-                chunks = split_into_chunks(
-                    waveform, sr, self.frame_seconds,
-                )
-                return np.stack([log_mel(chunk) for chunk in chunks])
+                return load_clip_log_mels(wav_path)
 
         return LogMelPreprocessor(embedder_block)
 
