@@ -47,52 +47,67 @@ def _create_from_config(create_fn, config: dict, selector_key: str):
                                                                                     
                                                                                     
 def _build_preprocessor(config: dict):
-    """Construct a preprocessor based on the active selector.                         
-                
-    Returns an object with a .process(wav_path) -> np.ndarray method.                 
-    Audio params come from the active embedder's config block.
-    """                                                                               
-    name = config["preprocessor"]
-    embedder_block = config[config["frozen_embedder"]]                                
-                                                                                    
-    if name == "log_mel":
-        from preprocessing.loader import load_audio, split_into_chunks                
-        from preprocessing.compute_mels import log_mel                                
-                                                                                    
-        class LogMelPreprocessor:                                                     
-            def __init__(self, audio_config: dict):                                   
-                self.sample_rate = audio_config["sample_rate"]
-                self.frame_seconds = audio_config["frame_seconds"]                    
+    """Construct a preprocessor based on the active selector.
 
-            def process(self, wav_path: str) -> np.ndarray:                           
+    Returns an object with a .process(wav_path) -> np.ndarray method.
+
+    Audio params for log_mel come from the active embedder's config block,
+    because the spectrogram shape must match what the embedder was trained
+    with. The twfr and identity preprocessors don't need that link — twfr
+    reads its constants from config.py (matching the team's gmm/features.py),
+    and identity is for pre-extracted data.
+    """
+    name = config["preprocessor"]
+
+    if name == "log_mel":
+        from preprocessing.loader import load_audio, split_into_chunks
+        from preprocessing.compute_mels import log_mel
+
+        embedder_name = config["frozen_embedder"]
+        embedder_block = config.get(embedder_name) or {}
+
+        if "sample_rate" not in embedder_block or "frame_seconds" not in embedder_block:
+            raise ValueError(
+                f"log_mel preprocessor needs sample_rate and frame_seconds in "
+                f"the active embedder's config block ('{embedder_name}'), "
+                f"but they're missing. The log_mel preprocessor only makes "
+                f"sense paired with an embedder that declares these params."
+            )
+
+        class LogMelPreprocessor:
+            def __init__(self, audio_config: dict):
+                self.sample_rate = audio_config["sample_rate"]
+                self.frame_seconds = audio_config["frame_seconds"]
+
+            def process(self, wav_path: str) -> np.ndarray:
                 waveform, sr = load_audio(
-                    wav_path, self.sample_rate, mono=True,                            
-                )                                                                     
+                    wav_path, self.sample_rate, mono=True,
+                )
                 chunks = split_into_chunks(
-                    waveform, sr, self.frame_seconds,                                 
+                    waveform, sr, self.frame_seconds,
                 )
                 return np.stack([log_mel(chunk) for chunk in chunks])
-                                                                                    
+
         return LogMelPreprocessor(embedder_block)
-                                                                                    
-    elif name == "twfr":                                                              
+
+    elif name == "twfr":
         from gmm.features import load_log_mel
-                                                                                    
+
         class TWFRPreprocessor:
-            def process(self, wav_path: str) -> np.ndarray:                           
+            def process(self, wav_path: str) -> np.ndarray:
                 return load_log_mel(wav_path)
-                                                                                    
+
         return TWFRPreprocessor()
-                                                                                    
+
     elif name == "identity":
         class IdentityPreprocessor:
             def process(self, wav_path: str) -> np.ndarray:
-                raise NotImplementedError(                                            
+                raise NotImplementedError(
                     "Identity preprocessor requires pre-extracted data"
-                )                                                                     
-                
-        return IdentityPreprocessor()                                                 
-                
+                )
+
+        return IdentityPreprocessor()
+
     else:
         raise ValueError(f"Unknown preprocessor: '{name}'")
                                                                                     
@@ -108,9 +123,7 @@ def _build_shared_components(config: dict):
     frozen_embedder = _create_from_config(
         create_embedder, config, "frozen_embedder",                                   
     )           
-    if hasattr(frozen_embedder, "validate_preprocessing"):
-        embedder_block = config[config["frozen_embedder"]]                            
-        frozen_embedder.validate_preprocessing(embedder_block)
+    embedder_block = config.get(config["frozen_embedder"]) or {}     
                                                                                     
     topology = _create_from_config(create_topology, config, "topology")               
     merge = _create_from_config(create_merge, config, "merge")
