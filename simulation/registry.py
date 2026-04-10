@@ -54,7 +54,9 @@ def _make_registry(component_name: str) -> tuple:
                 f"Unknown {component_name} '{name}'. Available: [{available}]"
             )                                                                         
         return _registry[name](**kwargs)
-                                                                                    
+
+    
+                                                                                  
     def list_all() -> list[str]:                                                    
         """Return sorted list of registered names."""
         return sorted(_registry)

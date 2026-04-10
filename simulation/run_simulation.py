@@ -13,7 +13,8 @@ from pathlib import Path
 
 import numpy as np
 import yaml
-from sklearn.metrics import roc_auc_score                                             
+from sklearn.metrics import roc_auc_score  
+import time                                            
 
 from simulation.registry import (                                                     
     create_embedder,
@@ -25,7 +26,8 @@ from simulation.node.node import Node
 from simulation.data.simulation_loader import load_all_timelines
 from simulation import lockstep  
 from simulation.lockstep import TimestepResult                                                    
-                                                                                        
+from simulation.reporting import make_run_dir, save_results, save_plots, save_latent_plots
+                                                                                       
                                                                                     
 # ── Component construction ───────────────────────────────────────────────────       
                                                                                     
@@ -285,7 +287,13 @@ def main(config_path: str = "simulation/configs/default.yaml"):
     print(f"Shuffle:         {sim['shuffle_mode']}")
     print(f"Warmup count:    {sim['warmup_count']}")                                  
     print()     
+
+    run_dir = make_run_dir()                                                        
+    print(f"Run directory: {run_dir}")                                              
+    print()     
                                                                                     
+    start_time = time.time() 
+
     # Load shuffled timelines from the split directories                              
     timelines_by_type = load_all_timelines(
         splits_dir=Path(data["splits_dir"]),                                          
@@ -320,7 +328,31 @@ def main(config_path: str = "simulation/configs/default.yaml"):
         n_anomalies = sum(1 for r in result.node_results if r.label == 1)
         print(_format_step(result, data["machine_types"]))                                       
                                                                                     
-    _print_results(nodes_by_type)                                                     
+    _print_results(nodes_by_type)  
+
+
+    runtime_seconds = time.time() - start_time
+                                                                                      
+    print(f"\nSaving run artefacts to {run_dir}")
+    save_results(                                                                   
+        nodes_by_type=nodes_by_type,
+        config=config,                                                              
+        config_path=Path(config_path),
+        runtime_seconds=runtime_seconds,                                            
+        run_dir=run_dir,                
+    )                                                                               
+    save_plots(
+        nodes_by_type=nodes_by_type,                                                
+        config=config,              
+        run_dir=run_dir,
+    )
+    save_latent_plots(                                                              
+        nodes_by_type=nodes_by_type,                                                
+        timelines_by_type=timelines_by_type,
+        config=config,                      
+        run_dir=run_dir,
+    )                 
+    print(f"Done. Runtime: {runtime_seconds:.1f}s")                                                   
                 
                                                                                     
 if __name__ == "__main__":
