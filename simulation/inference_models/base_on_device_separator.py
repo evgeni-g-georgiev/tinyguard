@@ -47,3 +47,31 @@ class BaseOnDeviceSeparator(ABC):
     @abstractmethod
     def merge_state(self, neighbour_states: list[dict]) -> None:
         """Incorporate received state from neighbours."""
+
+    @abstractmethod
+    def description(self) -> str:                                                   
+        """Return a short human-readable label for plot titles.
+                                                                
+        Examples:                                                                   
+            "SVDD (1312 params)"
+            "GMM (2 components, diag cov)"                                          
+            "Identity"                    
+        """ 
+
+    @abstractmethod
+    def project(self, clip_embedding: np.ndarray) -> np.ndarray:                    
+        """Return the post-separator latent vector for visualisation.
+                                                                                    
+        This is the intermediate representation the separator scores in,
+        NOT the final scalar score. Used by the reporting module to                 
+        generate latent space plots.                               
+                                                                                    
+        Args:   
+            clip_embedding: Output of the preprocessor + embedder chain.            
+                                                                        
+        Returns:                                                                    
+            Post-separator latent vector. Shape depends on the separator:
+                SVDD:     (n_frames, output_dim) — post-network projection          
+                GMM:      (n_mels,) — TWFR feature vector                           
+                Identity: input unchanged                                           
+        """ 

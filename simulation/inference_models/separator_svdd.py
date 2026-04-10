@@ -98,3 +98,21 @@ class SVDDSeparator(BaseOnDeviceSeparator):
 
     def merge_state(self, neighbour_states: list[dict]) -> None:
         pass  # No-op until Merge learing is implemented
+
+    def description(self) -> str:
+          """e.g. 'SVDD (1312 params)'"""                                             
+          if self.model is None:         
+              return "SVDD (uncalibrated)"
+          n_params = sum(p.numel() for p in self.model.parameters())                  
+          return f"SVDD ({n_params} params)"   
+
+    def project(self, clip_embedding: np.ndarray) -> np.ndarray:
+        """Return the (n_frames, output_dim) post-separator projection.
+                                                                                    
+        This is what score() consumes internally before collapsing to
+        a max-distance scalar. Used by reporting.py for latent plots.               
+        """                                                          
+        self.model.eval()                                                           
+        with torch.no_grad():
+            tensor = torch.tensor(clip_embedding, dtype=torch.float32)              
+            return self.model(tensor).numpy()

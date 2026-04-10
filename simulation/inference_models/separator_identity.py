@@ -24,3 +24,9 @@ class IdentitySeparator(BaseOnDeviceSeparator):
 
     def merge_state(self, neighbour_states: list[dict]) -> None:
         pass
+
+    def description(self) -> str:
+        return "Identity"   
+    
+    def project(self, clip_embedding: np.ndarray) -> np.ndarray:
+        return clip_embedding       
