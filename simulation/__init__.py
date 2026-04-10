@@ -16,7 +16,8 @@ from simulation.inference_models import embedder_acoustic      # noqa: F401
 
 # On-device separators                                                                
 from simulation.inference_models import separator_identity     # noqa: F401
-from simulation.inference_models import separator_svdd         # noqa: F401           
+from simulation.inference_models import separator_svdd         # noqa: F401    
+from simulation.inference_models import separator_gmm          # noqa: F401       
                                                                                     
 # Topologies
 from simulation.node import topology_isolated                  # noqa: F401           
