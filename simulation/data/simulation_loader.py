@@ -96,26 +96,71 @@ def _shuffle_block_fixed(
     block_interval: int,
     rng: random.Random,
 ) -> tuple[list[str], list[int]]:
-    """Anomaly blocks at regular intervals in the normal stream.
+    """Spread anomaly blocks evenly across the normal pool.
 
-    Every block_interval normal clips, insert a block of block_size
-    anomaly clips. Clips within each block are shuffled but the
-    placement pattern is deterministic.
+    The configured block_interval is used as a hint, not a hard constraint.
+    With n_blocks anomaly blocks and len(normal) normals, the function
+    splits the normals into (n_blocks + 1) segments of roughly equal size
+    and inserts one block between each pair. This guarantees:
+        - Every anomaly clip appears in the timeline (no data dropped)
+        - Blocks are evenly distributed end-to-end (no trailing pile-up)
+
+    A warning is printed if the auto-scaled interval differs significantly
+    from the requested block_interval, so the user knows their hint was
+    overridden.
     """
-    normal   = rng.sample(normal_paths,   len(normal_paths))
-    abnormal = rng.sample(abnormal_paths, len(abnormal_paths))
+    normal = normal_paths.copy()
+    rng.shuffle(normal)
 
-    normal_chunks   = [normal[i:i + block_interval]   for i in range(0, len(normal),   block_interval)]
-    abnormal_blocks = [abnormal[i:i + block_size] for i in range(0, len(abnormal), block_size)]
+    abnormal = abnormal_paths.copy()
+    rng.shuffle(abnormal)
 
-    labelled = [
-        (p, label)
-        for normal_chunk, abnormal_block in zip_longest(normal_chunks, abnormal_blocks, fillvalue=[])
-        for p, label in [*zip(normal_chunk, repeat(0)), *zip(abnormal_block, repeat(1))]
+    blocks = [
+        abnormal[i:i + block_size]
+        for i in range(0, len(abnormal), block_size)
+    ]
+    n_blocks = len(blocks)
+
+    if n_blocks == 0:
+        return normal, [0] * len(normal)
+
+    # Split normals into (n_blocks + 1) segments. Place one block between
+    # each pair, so the layout is:
+    # [normals_seg_0][block_0][normals_seg_1][block_1]...[block_N-1][normals_seg_N]
+    # Leftover normals get distributed one extra to the early segments.
+    base_size, leftover = divmod(len(normal), n_blocks + 1)
+    segment_sizes = [
+        base_size + (1 if i < leftover else 0)
+        for i in range(n_blocks + 1)
     ]
 
-    paths, labels = zip(*labelled)
-    return list(paths), list(labels)
+    # Warn if the actual interval drifts far from the user's hint
+    actual_interval = base_size
+    if abs(actual_interval - block_interval) > 2:
+        print(
+            f"  Note: block_interval={block_interval} requested but only "
+            f"{actual_interval} normals fit between blocks "
+            f"({n_blocks} blocks across {len(normal)} normals)."
+        )
+
+    result_paths: list[str] = []
+    result_labels: list[int] = []
+    normal_idx = 0
+
+    for i, seg_size in enumerate(segment_sizes):
+        # Normal segment
+        for _ in range(seg_size):
+            result_paths.append(normal[normal_idx])
+            result_labels.append(0)
+            normal_idx += 1
+
+        # Anomaly block (after every segment except the last)
+        if i < n_blocks:
+            for path in blocks[i]:
+                result_paths.append(path)
+                result_labels.append(1)
+
+    return result_paths, result_labels
 
 # ── Public Functions ────────────────────────────────────────────────────────
 
