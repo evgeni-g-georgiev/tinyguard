@@ -46,34 +46,23 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
     STUDENT_DIR, SEPARATOR_DIR, MIMII_SPLITS, INFERENCE_DIR, MIMII_ROOT,
     MACHINE_TYPES, MACHINE_IDS,
-    SAMPLE_RATE, FRAME_LEN, N_FFT, HOP_LENGTH, N_MELS, LOG_OFFSET,
     CLIP_SECS,
 )
 from distillation.cnn import AcousticEncoder
 from separator.separator import FsSeparator, score_clips
+from preprocessing.separator_input import load_clip_log_mels
 
 
 # ── audio helpers ─────────────────────────────────────────────────────────────
 
-def log_mel(frame: np.ndarray) -> np.ndarray:
-    mel = librosa.feature.melspectrogram(
-        y=frame, sr=SAMPLE_RATE, n_fft=N_FFT,
-        hop_length=HOP_LENGTH, n_mels=N_MELS, power=2.0,
-    )
-    return np.log(mel + LOG_OFFSET)[np.newaxis, :, :]
-
-
-def embed_clip(wav_path: str, model: AcousticEncoder, device) -> np.ndarray | None:
-    audio, _ = librosa.load(wav_path, sr=SAMPLE_RATE, mono=True)
-    n_frames  = len(audio) // FRAME_LEN
-    if n_frames == 0:
+def embed_clip(wav_path, model, device):
+    mels = load_clip_log_mels(wav_path)
+    if mels is None:
         return None
-    mels = np.stack([
-        log_mel(audio[i * FRAME_LEN:(i + 1) * FRAME_LEN].astype(np.float32))
-        for i in range(n_frames)
-    ])
+
     with torch.no_grad():
         embs = model(torch.tensor(mels, dtype=torch.float32).to(device)).cpu().numpy()
+
     return embs
 
 

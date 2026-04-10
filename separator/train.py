@@ -40,7 +40,6 @@ import json
 import sys
 from pathlib import Path
 
-import librosa
 import numpy as np
 import torch
 from tqdm import tqdm
@@ -49,50 +48,21 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
     STUDENT_DIR, MIMII_SPLITS, SEPARATOR_DIR, MIMII_ROOT,
     MACHINE_TYPES, MACHINE_IDS,
-    SAMPLE_RATE, FRAME_LEN, N_FFT, HOP_LENGTH, N_MELS, LOG_OFFSET,
     THRESHOLD_PCT, FS_EPOCHS,
 )
 from distillation.cnn import AcousticEncoder
+from preprocessing.separator_input import load_clip_log_mels
 from separator.separator import train_fs, score_clips
 
 
-# ── audio helpers ─────────────────────────────────────────────────────────────
 
-def log_mel(frame: np.ndarray) -> np.ndarray:
-    mel = librosa.feature.melspectrogram(
-        y=frame, sr=SAMPLE_RATE, n_fft=N_FFT,
-        hop_length=HOP_LENGTH, n_mels=N_MELS, power=2.0,
-    )
-    return np.log(mel + LOG_OFFSET)[np.newaxis, :, :]   # (1, 64, 61)
+def _validate_inputs(checkpoint_path):
+    """Check that the frozen encoder checkpoint and split manifest exist."""
+    ckpt_path = Path(checkpoint_path)
 
-
-def embed_clip(wav_path: str, model: AcousticEncoder, device) -> np.ndarray | None:
-    """Return (n_frames, embedding_dim) float32 embeddings for one clip, or None if too short."""
-    audio, _ = librosa.load(wav_path, sr=SAMPLE_RATE, mono=True)
-    n_frames  = len(audio) // FRAME_LEN
-    if n_frames == 0:
-        return None
-    # Stack all frames into a batch and run a single forward pass for efficiency
-    mels = np.stack([
-        log_mel(audio[i * FRAME_LEN:(i + 1) * FRAME_LEN].astype(np.float32))
-        for i in range(n_frames)
-    ])
-    with torch.no_grad():
-        embs = model(torch.tensor(mels, dtype=torch.float32).to(device)).cpu().numpy()
-    return embs
-
-
-# ── main ─────────────────────────────────────────────────────────────────────
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", default=str(STUDENT_DIR / "acoustic_encoder.pt"))
-    args = parser.parse_args()
-
-    ckpt_path = Path(args.checkpoint)
     if not ckpt_path.exists():
         print(f"ERROR: Checkpoint not found at {ckpt_path}")
-        print("Run:  python distillation/train.py")
+        print("Run:  python -m distillation.train")
         sys.exit(1)
 
     if not MIMII_SPLITS.exists():
@@ -100,18 +70,87 @@ def main():
         print("Run:  python preprocessing/split_mimii.py")
         sys.exit(1)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}")
+    return ckpt_path
 
-    ckpt  = torch.load(ckpt_path, map_location=device, weights_only=False)
+
+def _select_device():
+    """Select the best available torch device and print it."""
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+
+    print(f"Device: {device}")
+    return device
+
+
+def _load_splits():
+    """Load the MIMII train/test split manifest."""
+    with open(MIMII_SPLITS) as f:
+        return json.load(f)
+
+
+def _load_frozen_encoder(checkpoint_path, device):
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model = AcousticEncoder()
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(device).eval()
-    print(f"Loaded AcousticEncoder: epoch {ckpt['epoch']}, val MSE {ckpt['val_loss']:.5f}")
 
-    with open(MIMII_SPLITS) as f:
-        splits = json.load(f)
+    return model, ckpt
 
+
+
+def _embed_clip(wav_path, model, device):
+    mels = load_clip_log_mels(wav_path)
+    if mels is None:
+        return None
+
+    with torch.no_grad():
+        embs = model(torch.tensor(mels, dtype=torch.float32).to(device)).cpu().numpy()
+
+    return embs
+
+
+def _train_machine_separator(train_paths, model, device):
+    """Train one machine-specific SVDD separator from normal training clips."""
+    train_embs = []
+
+    for path in tqdm(train_paths, desc="    embed", leave=False, unit="clip"):
+        embs = _embed_clip(path, model, device)
+        if embs is not None:
+            train_embs.append(embs)
+
+    if not train_embs:
+        return None
+
+    # Flatten all per-clip frame embeddings into a single matrix for SVDD training
+    stacked = np.vstack(train_embs) # (N_frames, 32)
+    # Train SVDD — returns the trained model and the fixed centroid
+    model_fs, centroid = train_fs(stacked, epochs=FS_EPOCHS)
+
+    # Threshold: 95th percentile of training clip scores. Clips scoring
+    # above this at inference time are flagged as anomalous.
+    train_scores = score_clips(train_embs, model_fs, centroid)
+    threshold = float(np.percentile(train_scores, THRESHOLD_PCT))
+    n_fs_params = sum(p.numel() for p in model_fs.parameters())
+
+    # return artefact
+    return {
+        "state_dict": model_fs.state_dict(),
+        "centroid": centroid,
+        "threshold": threshold,
+        "input_dim": stacked.shape[1],
+        "hidden_dim": 32,
+        "output_dim": 8,
+        "n_params": n_fs_params,
+        "n_train_clips": len(train_embs),
+    }
+
+
+def _train_all_machine_separators(splits, model, device):
+    """Train and save one separator artefact per machine."""
     SEPARATOR_DIR.mkdir(parents=True, exist_ok=True)
 
     print(f"\nTraining SVDD for {len(splits)} machines …\n")
@@ -127,55 +166,56 @@ def main():
             train_paths = [str(MIMII_ROOT / p) for p in splits[key]["train_normal"]]
             print(f"  [{key}]  {len(train_paths)} training clips")
 
-            # Extract embeddings
-            train_embs = []
-            for path in tqdm(train_paths, desc=f"    embed", leave=False, unit="clip"):
-                embs = embed_clip(path, model, device)
-                if embs is not None:
-                    train_embs.append(embs)
+            artifact = _train_machine_separator(train_paths, model, device)
 
-            if not train_embs:
+            if artifact is None:
                 print(f"    No valid embeddings — skipping.")
                 continue
 
-            # Flatten all per-clip frame embeddings into a single matrix for SVDD training
-            stacked = np.vstack(train_embs)   # (N_frames, 32)
-
-            # Train SVDD — returns the trained model and the fixed centroid
-            model_fs, centroid = train_fs(stacked, epochs=FS_EPOCHS)
-
-            # Threshold: 95th percentile of training clip scores. Clips scoring
-            # above this at inference time are flagged as anomalous.
-            train_scores = score_clips(train_embs, model_fs, centroid)
-            threshold    = float(np.percentile(train_scores, THRESHOLD_PCT))
-
-            n_fs_params = sum(p.numel() for p in model_fs.parameters())
-
-            # Save artefact
             out_path = SEPARATOR_DIR / f"{mtype}_{mid}.pt"
-            torch.save({
-                "state_dict":  model_fs.state_dict(),
-                "centroid":    centroid,
-                "threshold":   threshold,
-                "input_dim":   stacked.shape[1],
-                "hidden_dim":  32,
-                "output_dim":  8,
-                "n_params":    n_fs_params,
-                "n_train_clips": len(train_embs),
-            }, out_path)
+            torch.save(artifact, out_path)
 
-            summary_rows.append((key, threshold, n_fs_params, len(train_embs)))
-            print(f"    threshold={threshold:.4f}  params={n_fs_params}  → {out_path.name}")
+            summary_rows.append(
+                (key, artifact["threshold"], artifact["n_params"], artifact["n_train_clips"])
+            )
+            print(
+                f"    threshold={artifact['threshold']:.4f}  "
+                f"params={artifact['n_params']}  → {out_path.name}"
+            )
 
+    return summary_rows
+
+
+def _print_summary(summary_rows):
+    """Print the separator training summary."""
     print(f"\n{'─' * 55}")
     print(f"  {'Machine':<20}  {'Threshold':>10}  {'Params':>8}")
     print(f"  {'─'*20}  {'─'*10}  {'─'*8}")
+
     for key, thr, n_p, _ in summary_rows:
         print(f"  {key:<20}  {thr:>10.4f}  {n_p:>8}")
+
     print(f"{'─' * 55}")
     print(f"\nSaved {len(summary_rows)} artefacts → {SEPARATOR_DIR}/")
     print("Next:  python inference/run.py")
 
 
+
+def train_separator(checkpoint_path):
+    ckpt_path = _validate_inputs(checkpoint_path)
+    device = _select_device()
+    model, ckpt = _load_frozen_encoder(ckpt_path, device)
+
+    print(f"Loaded AcousticEncoder: epoch {ckpt['epoch']}, val MSE {ckpt['val_loss']:.5f}")
+
+    splits = _load_splits()
+    summary_rows = _train_all_machine_separators(splits, model, device)
+    _print_summary(summary_rows)
+
+
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--checkpoint", default=str(STUDENT_DIR / "acoustic_encoder.pt"))
+    args = parser.parse_args()
+    train_separator(args.checkpoint)
+

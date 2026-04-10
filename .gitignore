@@ -26,3 +26,4 @@ group_env/
 
 # Output results
 simulation/outputs/
+simulation/data/
