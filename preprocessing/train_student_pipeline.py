@@ -8,7 +8,7 @@ from preprocessing.split_mimii import split_mimii
 def preprocessing():
     extract_embeddings()
     compute_mels()
-    #split_mimii()
+    split_mimii()
 
 
 
