@@ -11,9 +11,9 @@
   # ─────────────────────────────────────────────────────────────────────────────
                                                                                         
   # ── Component selection ──────────────────────────────────────────────────────       
-  preprocessor:    log_mel        # log_mel | twfr | identity                           
-  frozen_embedder: acoustic_encoder   # acoustic_encoder | identity                     
-  separator:       svdd            # svdd | gmm | identity                              
+  preprocessor:    twfr        # log_mel | twfr | identity                           
+  frozen_embedder: identity   # acoustic_encoder | identity                     
+  separator:       gmm            # svdd | gmm | identity                              
   topology:        isolated        # isolated | fully_connected                         
   merge:           none            # none | soft_param                                  
                                                                                         
@@ -48,7 +48,7 @@
   svdd:           
     hidden_dim:   32                                                                    
     output_dim:   8
-    threshold_percentile: 95.0
+    threshold_percentile: 99.0
     holdout_fraction:     0.2 
     lr:           0.01
     weight_decay: 1.0e-4
@@ -77,7 +77,7 @@
   # ── Simulation parameters ────────────────────────────────────────────────────       
   simulation:
     warmup_count:   30                                                                  
-    shuffle_mode:   random         # random | block_random | block_fixed
+    shuffle_mode:   block_fixed         # random | block_random | block_fixed
     block_size:     5                                                                   
     block_interval: 20
     extract_mode:   precompute     # precompute | online                                
