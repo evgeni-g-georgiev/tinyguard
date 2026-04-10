@@ -41,6 +41,7 @@ N_FFT        = 1024
 HOP_LENGTH   = 256
 N_MELS       = 64
 LOG_OFFSET   = 1e-6
+MIMII_CLIP_SECS = 10
 
 # ── YAMNet dequantisation ─────────────────────────────────────────────────────
 EMB_IDX    = 115
