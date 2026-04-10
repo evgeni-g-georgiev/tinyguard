@@ -98,3 +98,18 @@ class GMMSeparator(BaseOnDeviceSeparator):
                 
     def merge_state(self, neighbour_states: list[dict]) -> None:                    
         pass  # No-op until federation is implemented for GMM
+
+    def description(self) -> str:
+          """e.g. 'GMM (2 components, diag cov)'"""                                   
+          return f"GMM ({self.n_components} components, {self.covariance_type} cov)"
+    
+
+    def project(self, clip_log_mel: np.ndarray) -> np.ndarray:
+        """Return the (n_mels,) TWFR feature vector for the clip.                   
+                                                                
+        This is what GMMDetector.score() consumes internally before                 
+        computing the negative log-likelihood. Used by reporting.py                 
+        for latent plots.                                                           
+        """                                                                         
+        from gmm.features import twfr_feature                                       
+        return twfr_feature(clip_log_mel, self.detector.r_)
