@@ -23,3 +23,6 @@ group_env/
 /data/mimii/
 /data/archives/
 /data/tmp/
+
+# Output results
+simulation/outputs/
