@@ -1,0 +1,101 @@
+# ─────────────────────────────────────────────────────────────────────────────       
+  # Simulation Configuration                                                            
+  #                                                                                     
+  # Top-level keys (preprocessor, frozen_embedder, separator, ...) are                  
+  # SELECTORS. They name which implementation to use. The corresponding                 
+  # named block (e.g. acoustic_encoder:) holds the parameters for that                  
+  # implementation.                                                                     
+  #                                                                                     
+  # Switching pipelines = change the selector AND make sure the named
+  # block exists. Unused blocks are ignored.                                            
+  # ─────────────────────────────────────────────────────────────────────────────
+                                                                                        
+  # ── Component selection ──────────────────────────────────────────────────────       
+  preprocessor:    log_mel        # log_mel | twfr | identity                           
+  frozen_embedder: acoustic_encoder   # acoustic_encoder | identity                     
+  separator:       svdd            # svdd | gmm | identity                              
+  topology:        isolated        # isolated | fully_connected                         
+  merge:           none            # none | soft_param                                  
+                                                                                        
+  # ── Frozen embedder configs ──────────────────────────────────────────────────       
+  # Each block is the full set of params needed for that embedder.                      
+  # Audio params live here because they're tied to the embedder's training.             
+                                                                                        
+  acoustic_encoder:                                                                     
+    checkpoint:    distillation/outputs/student/acoustic_encoder.pt                     
+    latent_dim:    32              # output dimension — propagates to separator         
+    sample_rate:   16000                                                                
+    frame_seconds: 0.975           # YAMNet's hardcoded frame size                      
+    n_mels:        64                                                                   
+    n_fft:         1024
+    hop_length:    256                                                                  
+    center:        true            # librosa padding mode
+                                                                                        
+  identity_embedder:
+    latent_dim:    128             # TWFR feature dim (for GMM pipeline)                
+    sample_rate:   16000                                                                
+   
+  # ── Preprocessor configs ─────────────────────────────────────────────────────       
+  # Inherit audio params from the active embedder block at runtime.
+  # No params here unless preprocessor-specific.                                        
+                                                                                        
+  log_mel: {}     # uses audio params from acoustic_encoder                             
+  twfr:    {}     # uses audio params from identity_embedder                            
+                                                                                        
+  # ── Separator configs ────────────────────────────────────────────────────────       
+  # input_dim auto-set from the active embedder's latent_dim.
+                                                                                        
+  svdd:           
+    hidden_dim:   32                                                                    
+    output_dim:   8
+    threshold_percentile: 95.0
+    holdout_fraction:     0.2 
+    lr:           0.01
+    weight_decay: 1.0e-4
+    epochs:       50                                                                    
+    batch_size:   32
+    seed:         42                                                                    
+                                                                                        
+  gmm:
+    n_components:   2                                                                   
+    covariance_type: diag
+    threshold_pct:   95
+    seed:            42
+                                                                                        
+  identity_separator: {}
+                                                                                        
+  # ── Topology configs ─────────────────────────────────────────────────────────       
+  isolated: {}
+  fully_connected: {}                                                                   
+                  
+  # ── Merge configs ────────────────────────────────────────────────────────────       
+  none: {}
+                                                                                        
+  soft_param:     
+    alpha: 0.5
+
+  # ── Simulation parameters ────────────────────────────────────────────────────       
+  simulation:
+    warmup_count:   30                                                                  
+    shuffle_mode:   random         # random | block_random | block_fixed
+    block_size:     5                                                                   
+    block_interval: 20
+    extract_mode:   precompute     # precompute | online                                
+    seed:           42                                                                  
+   
+  # ── Federation ───────────────────────────────────────────────────────────────       
+  federation:     
+    enabled:  false                                                                     
+    interval: 10                                                                        
+   
+  # ── Memory tracking ──────────────────────────────────────────────────────────       
+  memory:         
+    analytical:      true                                                               
+    python_tracking: false
+                                                                                        
+  # ── Data ─────────────────────────────────────────────────────────────────────
+  data:                                                                                 
+    mimii_root:    data/mimii
+    splits_dir:    simulation/data/splits                                               
+    machine_types: [fan, pump, slider, valve]                                           
+    machine_ids:   [id_00, id_02, id_04, id_06]     
