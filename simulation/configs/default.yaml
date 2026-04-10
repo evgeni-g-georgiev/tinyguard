@@ -11,9 +11,9 @@
 # ─────────────────────────────────────────────────────────────────────────────
                                                                                       
 # ── Component selection ──────────────────────────────────────────────────────       
-preprocessor:    log_mel        # log_mel | twfr | identity                           
-frozen_embedder: acoustic_encoder   # acoustic_encoder | identity                     
-separator:       svdd            # svdd | gmm | identity                              
+preprocessor:    twfr        # log_mel | twfr | identity                           
+frozen_embedder: identity   # acoustic_encoder | identity                     
+separator:       gmm            # svdd | gmm | identity                              
 topology:        isolated        # isolated | fully_connected                         
 merge:           none            # none | soft_param                                  
                                                                                       

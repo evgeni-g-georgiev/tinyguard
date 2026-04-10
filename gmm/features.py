@@ -23,6 +23,9 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import GMM_HOP_LENGTH, GMM_N_MELS, LOG_OFFSET, N_FFT, SAMPLE_RATE
 
+from preprocessing.gmm_input import load_full_clip_log_mel
+
+
 # Alias with shorter names for readability within this module.
 # GMM_N_MELS=128 and GMM_HOP_LENGTH=512 match the paper (Guan et al. 2023),
 # and differ deliberately from the SVDD pipeline (N_MELS=64, HOP_LENGTH=256).
@@ -33,41 +36,8 @@ _HOP_LENGTH = GMM_HOP_LENGTH   # 50 % overlap of N_FFT=1024
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def load_log_mel(wav_path: str) -> np.ndarray:
-    """Load a WAV file and compute its log-mel spectrogram over the full clip.
-
-    Parameters
-    ----------
-    wav_path : str
-        Absolute path to a mono or stereo WAV file. Stereo is down-mixed.
-
-    Returns
-    -------
-    log_mel : np.ndarray, shape (GMM_N_MELS, T), dtype float32
-        Log-mel spectrogram where T ≈ n_samples / GMM_HOP_LENGTH. For a 10 s
-        clip at 16 kHz with GMM_HOP_LENGTH=512, T ≈ 312.
-
-    Raises
-    ------
-    RuntimeError
-        If the file cannot be loaded or produces zero audio samples.
-    """
-    try:
-        audio, _ = librosa.load(wav_path, sr=SAMPLE_RATE, mono=True)
-    except Exception as exc:
-        raise RuntimeError(f"Could not load '{wav_path}': {exc}") from exc
-
-    if audio.size == 0:
-        raise RuntimeError(f"Zero samples after loading '{wav_path}'.")
-
-    mel = librosa.feature.melspectrogram(
-        y=audio,
-        sr=SAMPLE_RATE,
-        n_fft=N_FFT,
-        hop_length=_HOP_LENGTH,
-        n_mels=_N_MELS,
-        power=2.0,
-    )
-    return np.log(mel + LOG_OFFSET).astype(np.float32)
+    """Load a WAV file and compute its full-clip log-mel spectrogram."""
+    return load_full_clip_log_mel(wav_path)
 
 
 def gwrp_weights(N: int, r: float) -> np.ndarray:

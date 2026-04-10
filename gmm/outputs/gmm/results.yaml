@@ -1,0 +1,456 @@
+fan/id_00:
+  threshold: 326.12228
+  r: 1.0
+  n_rounds: 3
+  rounds:
+  - round: 1
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 0
+    detection_idx: 0
+    threshold_round: 495.36814727783207
+  - round: 2
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: false
+    detection_delay_secs: null
+    detection_idx: null
+    threshold_round: 1132.2439270019531
+  - round: 3
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 10
+    detection_idx: 1
+    threshold_round: 610.6736755371094
+fan/id_02:
+  threshold: 436.58971
+  r: 1.0
+  n_rounds: 3
+  rounds:
+  - round: 1
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 0
+    detection_idx: 0
+    threshold_round: 478.28199005126953
+  - round: 2
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 0
+    detection_idx: 0
+    threshold_round: 436.5897079467771
+  - round: 3
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 0
+    detection_idx: 0
+    threshold_round: 436.5897079467771
+fan/id_04:
+  threshold: 250.22683
+  r: 1.0
+  n_rounds: 3
+  rounds:
+  - round: 1
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 90
+    detection_idx: 9
+    threshold_round: 680.0798377990723
+  - round: 2
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 10
+    detection_idx: 1
+    threshold_round: 653.2265533447267
+  - round: 3
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 20
+    detection_idx: 2
+    threshold_round: 520.4638504028321
+fan/id_06:
+  threshold: 279.48015
+  r: 1.0
+  n_rounds: 3
+  rounds:
+  - round: 1
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 0
+    detection_idx: 0
+    threshold_round: 392.30515136718753
+  - round: 2
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 0
+    detection_idx: 0
+    threshold_round: 661.9896240234375
+  - round: 3
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 0
+    detection_idx: 0
+    threshold_round: 489.2028259277344
+pump/id_00:
+  threshold: 328.51266
+  r: 0.95
+  n_rounds: 3
+  rounds:
+  - round: 1
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: false
+    detection_delay_secs: null
+    detection_idx: null
+    threshold_round: 876.884765625
+  - round: 2
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 20
+    detection_idx: 2
+    threshold_round: 456.1339233398437
+  - round: 3
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 250
+    detection_idx: 25
+    threshold_round: 586.2381225585937
+pump/id_02:
+  threshold: 381.2045
+  r: 1.0
+  n_rounds: 3
+  rounds:
+  - round: 1
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 0
+    detection_idx: 0
+    threshold_round: 610.0835220336915
+  - round: 2
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: false
+    detection_delay_secs: null
+    detection_idx: null
+    threshold_round: 788.1532836914062
+  - round: 3
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 10
+    detection_idx: 1
+    threshold_round: 489.087922668457
+pump/id_04:
+  threshold: 541.8423
+  r: 0.99
+  n_rounds: 3
+  rounds:
+  - round: 1
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 220
+    detection_idx: 22
+    threshold_round: 614.9276733398438
+  - round: 2
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: false
+    detection_delay_secs: null
+    detection_idx: null
+    threshold_round: 646.4873199462891
+  - round: 3
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 80
+    detection_idx: 8
+    threshold_round: 541.842295837402
+pump/id_06:
+  threshold: 378.88794
+  r: 1.0
+  n_rounds: 3
+  rounds:
+  - round: 1
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 50
+    detection_idx: 5
+    threshold_round: 627.854818725586
+  - round: 2
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: false
+    detection_delay_secs: null
+    detection_idx: null
+    threshold_round: 560.7688842773437
+  - round: 3
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: false
+    detection_delay_secs: null
+    detection_idx: null
+    threshold_round: 608.7480834960938
+slider/id_00:
+  threshold: 390.59883
+  r: 0.99
+  n_rounds: 3
+  rounds:
+  - round: 1
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: false
+    detection_delay_secs: null
+    detection_idx: null
+    threshold_round: 647.8059631347655
+  - round: 2
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 0
+    detection_idx: 0
+    threshold_round: 523.8050628662108
+  - round: 3
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: false
+    detection_delay_secs: null
+    detection_idx: null
+    threshold_round: 670.6723388671876
+slider/id_02:
+  threshold: 403.12832
+  r: 0.95
+  n_rounds: 3
+  rounds:
+  - round: 1
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 0
+    detection_idx: 0
+    threshold_round: 536.9613739013671
+  - round: 2
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 0
+    detection_idx: 0
+    threshold_round: 568.269808959961
+  - round: 3
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 0
+    detection_idx: 0
+    threshold_round: 607.245849609375
+slider/id_04:
+  threshold: 291.30021
+  r: 0.9
+  n_rounds: 3
+  rounds:
+  - round: 1
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 0
+    detection_idx: 0
+    threshold_round: 627.6504020690918
+  - round: 2
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 0
+    detection_idx: 0
+    threshold_round: 544.3652801513672
+  - round: 3
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 0
+    detection_idx: 0
+    threshold_round: 406.2410430908203
+slider/id_06:
+  threshold: 339.85549
+  r: 0.8
+  n_rounds: 2
+  rounds:
+  - round: 1
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 0
+    detection_idx: 0
+    threshold_round: 491.27357940673824
+  - round: 2
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: false
+    detection_delay_secs: null
+    detection_idx: null
+    threshold_round: 527.3609893798828
+valve/id_00:
+  threshold: 1252.29749
+  r: 0.5
+  n_rounds: 3
+  rounds:
+  - round: 1
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 20
+    detection_idx: 2
+    threshold_round: 1252.297485351561
+  - round: 2
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 20
+    detection_idx: 2
+    threshold_round: 1252.297485351561
+  - round: 3
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 0
+    detection_idx: 0
+    threshold_round: 1252.297485351561
+valve/id_02:
+  threshold: 374.90293
+  r: 0.5
+  n_rounds: 3
+  rounds:
+  - round: 1
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 0
+    detection_idx: 0
+    threshold_round: 549.9078186035156
+  - round: 2
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 30
+    detection_idx: 3
+    threshold_round: 508.5048522949219
+  - round: 3
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: false
+    detection_delay_secs: null
+    detection_idx: null
+    threshold_round: 569.0614013671875
+valve/id_04:
+  threshold: 332.12564
+  r: 0.9
+  n_rounds: 3
+  rounds:
+  - round: 1
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 0
+    detection_idx: 0
+    threshold_round: 432.2251190185547
+  - round: 2
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 0
+    detection_idx: 0
+    threshold_round: 458.3246063232422
+  - round: 3
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: true
+    detection_delay_secs: 0
+    detection_idx: 0
+    threshold_round: 414.34883422851567
+valve/id_06:
+  threshold: 373.2962
+  r: 0.95
+  n_rounds: 3
+  rounds:
+  - round: 1
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: false
+    detection_delay_secs: null
+    detection_idx: null
+    threshold_round: 508.1899520874024
+  - round: 2
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: false
+    detection_delay_secs: null
+    detection_idx: null
+    threshold_round: 552.3666595458985
+  - round: 3
+    n_false_pos: 0
+    n_normal_clips: 30
+    n_anom_clips: 30
+    detected: false
+    detection_delay_secs: null
+    detection_idx: null
+    threshold_round: 662.9539123535155
