@@ -1,45 +1,67 @@
+
 # preprocessing/
 
-Prepares cached features for distillation and fixes the MIMII train/test split. Run once; all outputs are reused by later stages.
+This folder contains two kinds of files: architecture files and pipeline files. The architecture files implement reusable the preprocessing components: audio loading, mel-spectrogram construction, and YAMNet loading. The pipeline files use those shared components to run complete preprocessing stages, cache their outputs, and prepare the inputs needed by later parts of the repository.
 
-## Scripts
 
-| Script | What it does |
+## Folder Structure
+
+```text
+preprocessing/
+|- loader.py
+|- mel_spectrogram.py
+|- yamnet_loading.py
+|- extract_embeddings.py
+|- compute_mels.py
+|- split_mimii.py
+|- train_student_pipeline.py
+|- outputs/
+|  |- fsd50k_cache/
+|  |- pca/
+|  |- mimii_splits/
+|- README.md
+````` 
+
+## File Roles
+
+### Architecture Files
+
+| File | Role |
 |---|---|
-| `extract_embeddings.py` | Runs YAMNet over every FSD50K clip, caches 1024D embeddings, fits PCA(32D) |
-| `compute_mels.py` | Computes log-mel spectrograms for every FSD50K clip, caches as numpy array |
-| `split_mimii.py` | Assigns MIMII clips to train/test sets; saves a fixed manifest so all stages use identical splits |
+| `loader.py` | Shared audio-loading and chunking helpers. |
+| `mel_spectrogram.py` | Shared mel-spectrogram construction helper used by the preprocessing pipeline. |
+| `yamnet_loading.py` | Shared helper for loading the local YAMNet TFLite model. |
 
-Run them in order:
+### Pipeline Files
 
-```bash
-python preprocessing/extract_embeddings.py   # ~15–20 min
-python preprocessing/compute_mels.py         # ~30 min, ~1.5 GB output
-python preprocessing/split_mimii.py          # fast; requires data/mimii/ to be populated
-```
-
-Each script is idempotent — if its outputs already exist it prints a message and exits early.
-
-## Inputs
-
-| Source | Required by |
+| File | Role |
 |---|---|
-| `data/fsd50k/FSD50K.eval_audio/` | `extract_embeddings.py`, `compute_mels.py` |
-| `data/yamnet/yamnet.tflite` | `extract_embeddings.py` |
-| `data/mimii/` | `split_mimii.py` |
+| `extract_embeddings.py` | Runs YAMNet on FSD50K audio chunks, caches teacher embeddings, and fits PCA. |
+| `compute_mels.py` | Converts the same FSD50K audio chunks into mel-spectrogram tensors and caches them. |
+| `split_mimii.py` | Creates a fixed MIMII split manifest for later separator training and inference. |
+| `train_student_pipeline.py` | Lightweight orchestration script that runs the student preprocessing stages in sequence. |
 
 ## Outputs
 
-| File | Shape | Used by |
+This folder produces the cached arrays and manifests needed by the rest of the repository.
+
+| Output | Meaning | Used by |
 |---|---|---|
-| `preprocessing/outputs/fsd50k_cache/eval_embeddings.npy` | (N, 1024) float32 | `distillation/train.py` |
-| `preprocessing/outputs/pca/pca_components.npy` | (32, 1024) float32 | `distillation/train.py` |
-| `preprocessing/outputs/pca/pca_mean.npy` | (1024,) float32 | `distillation/train.py` |
-| `preprocessing/outputs/fsd50k_cache/eval_mels.npy` | (N, 1, 64, 61) float32 | `distillation/train.py` |
-| `preprocessing/outputs/mimii_splits/splits.json` | JSON manifest | `separator/train.py`, `inference/run.py` |
+| `preprocessing/outputs/fsd50k_cache/eval_embeddings.npy` | Teacher embeddings of shape `(N_chunks, 1024)` | `distillation/train.py` |
+| `preprocessing/outputs/pca/pca_components.npy` | PCA projection matrix of shape `(32, 1024)` | `distillation/train.py` |
+| `preprocessing/outputs/pca/pca_mean.npy` | PCA mean vector of shape `(1024,)` | `distillation/train.py` |
+| `preprocessing/outputs/fsd50k_cache/eval_mels.npy` | Student inputs of shape `(N_chunks, 1, 64, 61)` | `distillation/train.py` |
+| `preprocessing/outputs/mimii_splits/splits.json` | Fixed MIMII train/test manifest | `separator/train.py`, `inference/run.py` |
 
-## Notes
+## How This Integrates With the Repo
 
-- PCA is fitted on FSD50K only. Fitting on MIMII would be data leakage.
-- `splits.json` stores paths relative to `data/mimii/` and uses a fixed seed (42), so every run produces identical splits. Regenerating it does not change clip assignments.
-- Frame index `i` in `eval_mels.npy` corresponds exactly to frame `i` in `eval_embeddings.npy` — the two scripts must process files in the same sorted order, which they do.
+The FSD50K preprocessing path supports knowledge distillation. `extract_embeddings.py` builds the teacher targets, `compute_mels.py` builds the aligned student inputs, and `distillation/train.py` then trains the student model from those cached outputs. The key alignment invariant is that mel tensor `i` corresponds to teacher embedding `i`.
+
+The MIMII split path supports downstream anomaly detection. `split_mimii.py` does not move audio files; it only writes a reproducible JSON manifest describing which clips belong to training and evaluation. That manifest is then consumed by `separator/train.py` and `inference/run.py`.
+
+## Usage
+
+Run the distillation preprocessing stages with:
+
+```bash
+python -m preprocessing.train_student_pipeline

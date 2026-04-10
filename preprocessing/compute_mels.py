@@ -25,7 +25,6 @@ Prerequisites
 """
 
 import glob
-import os
 import sys
 from pathlib import Path
 
@@ -36,70 +35,119 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
     FSD50K_AUDIO, FSDCACHE_DIR,
-    SAMPLE_RATE, FRAME_LEN, N_FFT, HOP_LENGTH, N_MELS, LOG_OFFSET,
+    SAMPLE_RATE, N_FFT, HOP_LENGTH, N_MELS, LOG_OFFSET, chunk_seconds,
 )
+from preprocessing.loader import load_audio, split_into_chunks
+from preprocessing.mel_spectrogram import make_log_mel_spectrogram
 
 
-# ── mel computation ─────────────────────────────────────────────────────────
 
-def log_mel(frame: np.ndarray) -> np.ndarray:
-    """
-    Compute log-mel spectrogram for a single 0.975 s audio frame.
-
-    Args:
-        frame: (15600,) float32 at 16 kHz
-    Returns:
-        (1, 64, 61) float32 — channel-first, ready for AcousticEncoder input
-    """
-    mel = librosa.feature.melspectrogram(
-        y=frame, sr=SAMPLE_RATE, n_fft=N_FFT,
-        hop_length=HOP_LENGTH, n_mels=N_MELS, power=2.0,
-    )
-    return np.log(mel + LOG_OFFSET)[np.newaxis, :, :]   # (1, 64, 61)
-
-
-# ── main ────────────────────────────────────────────────────────────────────
-
-def main():
-    FSDCACHE_DIR.mkdir(parents=True, exist_ok=True)
-
+def _get_mel_output_paths():
+    """Return output paths for the mel cache and teacher embedding cache."""
     mel_path = FSDCACHE_DIR / "eval_mels.npy"
     emb_path = FSDCACHE_DIR / "eval_embeddings.npy"
+    return mel_path, emb_path
 
-    if mel_path.exists():
-        m = np.load(mel_path, mmap_mode="r")
-        print(f"Mel cache already exists — {mel_path}")
-        print(f"  shape: {m.shape}  ({m.nbytes / 1e9:.2f} GB)")
-        return
 
+def _load_teacher_frame_count(emb_path):
+    """Load the expected number of teacher embeddings from the cache.
+
+    Args:
+    - emb_path: Path to the cached teacher embedding file.
+
+    Returns:
+        The number of cached teacher embeddings.
+    """
     if not emb_path.exists():
         print("ERROR: Teacher embeddings cache not found.")
         print("Run:  python preprocessing/extract_embeddings.py  first.")
         sys.exit(1)
 
-    n_emb_frames = np.load(emb_path, mmap_mode="r").shape[0]
-    print(f"Teacher embeddings: {n_emb_frames:,} frames — mel cache must match exactly.")
+    return np.load(emb_path, mmap_mode="r").shape[0]
 
+
+def _list_fsd50k_audio_files():
+    """List all FSD50K evaluation audio files in sorted order."""
     wav_files = sorted(glob.glob(str(FSD50K_AUDIO / "**" / "*.wav"), recursive=True))
+
     if not wav_files:
         print(f"ERROR: No WAV files found under {FSD50K_AUDIO}/")
         sys.exit(1)
 
+    return wav_files
+
+
+
+def _log_mel(chunk):
+    """Compute a log-mel spectrogram for one audio chunk."""
+    return make_log_mel_spectrogram(
+        waveform=chunk,
+        chunk_seconds=chunk_seconds,
+        sampling_frequency=SAMPLE_RATE,
+        n_mels=N_MELS,
+        n_fft=N_FFT,
+        hop_length=HOP_LENGTH, 
+    ) # (1, 64, 61)
+
+
+def _compute_mels_from_files(wav_files):
+    """Compute and stack mel spectrograms from multiple audio files.
+
+    Args:
+    - wav_files: Sorted list of input audio file paths.
+
+    Returns:
+    - A float32 array of shape (N_chunks, 1, 64, 61) containing one mel spectrogram per chunk.
+    """
+    batches = []
+
+    for path in tqdm(wav_files, unit="clip"):
+        audio, _ = load_audio(path, sampling_frequency=SAMPLE_RATE, mono=True)
+        chunks = split_into_chunks(audio, sampling_frequency=SAMPLE_RATE, chunk_seconds=chunk_seconds)
+
+        if len(chunks) == 0:
+            continue
+
+        for chunk in chunks:
+            batches.append(_log_mel(chunk.astype(np.float32)))
+
+    return np.stack(batches) # (N_frames, 1, 64, 61)
+
+
+
+def compute_mels():
+    """Compute log-mel spectrograms for FSD50K and cache them to disk.
+
+    Returns:
+    - A dictionary containing the saved mel cache path and the total number of computed chunks.
+    """
+    FSDCACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Step 1: Define output paths for the mel cache and teacher embedding cache
+    mel_path, emb_path = _get_mel_output_paths()
+
+    # Step 2: Return early if the mel cache already exists
+    if mel_path.exists():
+        m = np.load(mel_path, mmap_mode="r")
+        print(f"Mel cache already exists — {mel_path}")
+        print(f"  shape: {m.shape}  ({m.nbytes / 1e9:.2f} GB)")
+        return {
+            "mels_path": mel_path,
+            "n_chunks": m.shape[0],
+        }
+
+    # Step 3: Load the expected number of teacher embeddings for alignment
+    n_emb_frames = _load_teacher_frame_count(emb_path)
+    print(f"Teacher embeddings: {n_emb_frames:,} frames — mel cache must match exactly.")
+
+    # Step 4: Collect input audio files and compute mel spectrograms
+    wav_files = _list_fsd50k_audio_files()
     print(f"Found {len(wav_files):,} FSD50K clips.")
     print("Computing log-mel spectrograms …\n")
 
-    batches = []
-    for path in tqdm(wav_files, unit="clip"):
-        audio, _ = librosa.load(path, sr=SAMPLE_RATE, mono=True)
-        n_frames  = len(audio) // FRAME_LEN
-        if n_frames == 0:
-            continue
-        for i in range(n_frames):
-            frame = audio[i * FRAME_LEN : (i + 1) * FRAME_LEN].astype(np.float32)
-            batches.append(log_mel(frame))
+    all_mels = _compute_mels_from_files(wav_files)
 
-    all_mels = np.stack(batches)   # (N_frames, 1, 64, 61)
-
+    # Step 5: Check alignment with teacher embeddings and save the mel cache
     assert all_mels.shape[0] == n_emb_frames, (
         f"Frame count mismatch: {all_mels.shape[0]} mels vs "
         f"{n_emb_frames} embeddings. "
@@ -107,10 +155,16 @@ def main():
     )
 
     np.save(mel_path, all_mels)
+
     print(f"\nCached {all_mels.shape[0]:,} frames → {mel_path}")
     print(f"  shape: {all_mels.shape}  ({all_mels.nbytes / 1e9:.2f} GB)")
     print(f"  mel range: [{all_mels.min():.2f}, {all_mels.max():.2f}]")
 
+    return {
+        "mels_path": mel_path,
+        "n_chunks": all_mels.shape[0],
+    }
+
 
 if __name__ == "__main__":
-    main()
+    compute_mels()

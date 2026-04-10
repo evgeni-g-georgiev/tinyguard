@@ -44,12 +44,94 @@ from config import (
 )
 
 
-def main():
+
+def _check_mimii_root():
+    """Check that the MIMII dataset directory exists."""
     if not MIMII_ROOT.is_dir():
         print(f"ERROR: MIMII data not found at {MIMII_ROOT}/")
         print("Run:  python data/download_mimii.py  first.")
-        import sys; sys.exit(1)
+        sys.exit(1)
 
+
+def _list_machine_audio(machine_dir):
+    """List normal and abnormal WAV files for one machine directory."""
+    normal_paths = sorted((machine_dir / "normal").glob("*.wav"))
+    abnormal_paths = sorted((machine_dir / "abnormal").glob("*.wav"))
+    return normal_paths, abnormal_paths
+
+
+def _compute_n_rounds(norm_perm, anom_perm):
+    """Compute the maximum number of monitoring rounds supported by the data."""
+    return min(
+        N_ROUNDS,
+        (len(norm_perm) - TRAIN_CLIPS) // MONITOR_CLIPS,
+        len(anom_perm) // MONITOR_CLIPS,
+    )
+
+
+def _rel_path(path):
+    """Convert an absolute path to a path relative to MIMII_ROOT."""
+    # Store paths relative to MIMII_ROOT so the manifest is portable
+    # across machines with different absolute mount points.
+    return str(Path(path).relative_to(MIMII_ROOT))
+
+
+def _build_machine_split(mtype, mid):
+    """Build the split manifest entry for one machine."""
+    machine_dir = MIMII_ROOT / mtype / mid
+    key = f"{mtype}/{mid}"
+
+    if not machine_dir.is_dir():
+        print(f"  WARNING: {key} — directory not found, skipping.")
+        return key, None
+
+    normal_paths, abnormal_paths = _list_machine_audio(machine_dir)
+
+    if not normal_paths:
+        print(f"  WARNING: {key} — no normal clips found, skipping.")
+        return key, None
+
+    if not abnormal_paths:
+        print(f"  WARNING: {key} — no abnormal clips found, skipping.")
+        return key, None
+
+    rng = np.random.default_rng(SEED)
+    norm_perm = list(rng.permutation([str(p) for p in normal_paths]))
+    anom_perm = list(rng.permutation([str(p) for p in abnormal_paths]))
+
+    # Cap n_rounds by what the data can actually support:
+    #   - N_ROUNDS is the configured maximum
+    #   - second term: how many full monitoring windows fit in the remaining normal clips
+    #   - third term: how many full windows fit in the abnormal clips
+    n_rounds = _compute_n_rounds(norm_perm, anom_perm)
+
+    if n_rounds <= 0 or len(norm_perm) < TRAIN_CLIPS:
+        print(
+            f"  WARNING: {key} — insufficient clips "
+            f"(norm={len(norm_perm)}, anom={len(anom_perm)}), skipping."
+        )
+        return key, None
+
+    split = {
+        "train_normal": [_rel_path(p) for p in norm_perm[:TRAIN_CLIPS]],
+        "test_normal": [
+            _rel_path(p)
+            for p in norm_perm[TRAIN_CLIPS:TRAIN_CLIPS + n_rounds * MONITOR_CLIPS]
+        ],
+        "test_abnormal": [
+            _rel_path(p)
+            for p in anom_perm[:n_rounds * MONITOR_CLIPS]
+        ],
+        "n_rounds": n_rounds,
+    }
+
+    return key, split
+
+
+
+def split_mimii():
+    """Create and save the fixed MIMII train/test split manifest."""
+    _check_mimii_root()
     MIMII_SPLITS.parent.mkdir(parents=True, exist_ok=True)
 
     splits = {}
@@ -57,61 +139,19 @@ def main():
 
     for mtype in MACHINE_TYPES:
         for mid in MACHINE_IDS:
-            machine_dir = MIMII_ROOT / mtype / mid
-            key = f"{mtype}/{mid}"
+            key, split = _build_machine_split(mtype, mid)
 
-            if not machine_dir.is_dir():
-                print(f"  WARNING: {key} — directory not found, skipping.")
+            if split is None:
                 missing.append(key)
                 continue
 
-            normal_paths   = sorted((machine_dir / "normal").glob("*.wav"))
-            abnormal_paths = sorted((machine_dir / "abnormal").glob("*.wav"))
-
-            if not normal_paths:
-                print(f"  WARNING: {key} — no normal clips found, skipping.")
-                missing.append(key)
-                continue
-            if not abnormal_paths:
-                print(f"  WARNING: {key} — no abnormal clips found, skipping.")
-                missing.append(key)
-                continue
-
-            rng = np.random.default_rng(SEED)
-            norm_perm = list(rng.permutation([str(p) for p in normal_paths]))
-            anom_perm = list(rng.permutation([str(p) for p in abnormal_paths]))
-
-            # Cap n_rounds by what the data can actually support:
-            #   - N_ROUNDS is the configured maximum
-            #   - second term: how many full monitoring windows fit in the remaining normal clips
-            #   - third term: how many full windows fit in the abnormal clips
-            n_rounds = min(
-                N_ROUNDS,
-                (len(norm_perm) - TRAIN_CLIPS) // MONITOR_CLIPS,
-                len(anom_perm) // MONITOR_CLIPS,
+            splits[key] = split
+            print(
+                f"  {key}: {len(split['train_normal'])} train, "
+                f"{len(split['test_normal'])} test_normal, "
+                f"{len(split['test_abnormal'])} test_abnormal, "
+                f"{split['n_rounds']} rounds"
             )
-
-            if n_rounds <= 0 or len(norm_perm) < TRAIN_CLIPS:
-                print(f"  WARNING: {key} — insufficient clips (norm={len(norm_perm)}, "
-                      f"anom={len(anom_perm)}), skipping.")
-                missing.append(key)
-                continue
-
-            # Store paths relative to MIMII_ROOT so the manifest is portable
-            # across machines with different absolute mount points.
-            def rel(p):
-                return str(Path(p).relative_to(MIMII_ROOT))
-
-            splits[key] = {
-                "train_normal":  [rel(p) for p in norm_perm[:TRAIN_CLIPS]],
-                "test_normal":   [rel(p) for p in norm_perm[TRAIN_CLIPS:TRAIN_CLIPS + n_rounds * MONITOR_CLIPS]],
-                "test_abnormal": [rel(p) for p in anom_perm[:n_rounds * MONITOR_CLIPS]],
-                "n_rounds":      n_rounds,
-            }
-            print(f"  {key}: {len(splits[key]['train_normal'])} train, "
-                  f"{len(splits[key]['test_normal'])} test_normal, "
-                  f"{len(splits[key]['test_abnormal'])} test_abnormal, "
-                  f"{n_rounds} rounds")
 
     with open(MIMII_SPLITS, "w") as f:
         json.dump(splits, f, indent=2)
@@ -120,6 +160,13 @@ def main():
     if missing:
         print(f"Skipped: {missing}")
 
+    return {
+        "splits_path": MIMII_SPLITS,
+        "n_machines": len(splits),
+        "skipped": missing,
+    }
+
+
 
 if __name__ == "__main__":
-    main()
+    split_mimii()

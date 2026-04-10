@@ -30,6 +30,7 @@ GMM_HOP_LENGTH = 512   # 50 % overlap of N_FFT=1024, per paper implementation
 # ── Audio constants ───────────────────────────────────────────────────────────
 SAMPLE_RATE  = 16_000
 FRAME_LEN    = 15_600   # 0.975 s at 16 kHz — must stay identical across all stages
+chunk_seconds = FRAME_LEN / SAMPLE_RATE
 N_FFT        = 1024
 HOP_LENGTH   = 256
 N_MELS       = 64
