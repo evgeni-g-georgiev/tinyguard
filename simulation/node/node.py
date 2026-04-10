@@ -40,7 +40,7 @@ class Node:
 
         self.scores: list[float] = []                                                 
         self.labels: list[int] = []
-
+        self.predictions: list[int | None] = []
     
     def _wav_to_embedding(self, wav_path: str) -> np.ndarray:                       
         """Run the frozen pipeline: wav → preprocessor → embedder → embedding."""
@@ -64,21 +64,25 @@ class Node:
         ]
         self.separator.calibrate(warmup_embeddings)
 
-    def process_clip(self, wav_path: str, label: int) -> float:
-        """Process a single test clip: embed, score, and record.
-
-        Args:
-            wav_path: Path to the .wav file.
-            label: Ground truth label (0=normal, 1=abnormal).
-
-        Returns:
-            Anomaly score (higher = more anomalous).
-        """
-        embedding = self._wav_to_embedding(wav_path)
-        score = self.separator.score(embedding)
-        self.scores.append(score)
-        self.labels.append(label)
-        return score
+    def process_clip(self, wav_path: str, label: int) -> tuple[float, int | None]:
+        """Process a single test clip: embed, score, predict, record.                               
+                                                                                                    
+        Returns:                                                                                    
+            (score, predicted_label) where predicted_label is 1 if the                              
+            score exceeds the separator's threshold, 0 if below, or None                            
+            if the separator does not expose a threshold.                                           
+        """                                                                                         
+        embedding = self._wav_to_embedding(wav_path)                                                
+        score = self.separator.score(embedding)     
+                                                                                                    
+        threshold = getattr(self.separator, "threshold", None)
+        predicted_label = int(score > threshold) if threshold is not None else None                 
+                                                                                    
+        self.scores.append(score)                                                                   
+        self.labels.append(label)                                                                   
+        self.predictions.append(predicted_label)
+                                                                                                    
+        return score, predicted_label  
 
     def get_neighbours(self) -> list[str]:
         """Return IDs of nodes this node can communicate with."""

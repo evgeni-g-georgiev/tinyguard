@@ -25,8 +25,10 @@ from simulation.data.simulation_loader import NodeTimeline
 class NodeStepResult:
     """One node's output for a single timestep."""
     node_id: str
+    machine_type: str
     score: float
     label: int
+    predicted_label: int | None 
 
 
 @dataclass
@@ -57,7 +59,10 @@ def calibrate(
             )
             print(f"  Calibrating {node.node_id} "                                    
                 f"({len(timeline.warmup_paths)} clips)")
-            node.warmup(timeline.warmup_paths)                                        
+            node.warmup(timeline.warmup_paths)       
+            threshold = getattr(node.separator, "threshold", None)
+            if threshold is not None:
+                print(f"    thrshold = {threshold:.4f}")                                 
 
                                                                                     
 # ── Federation ───────────────────────────────────────────────────────────────
@@ -119,23 +124,25 @@ def evaluate(
             timelines = timelines_by_type[machine_type]                               
                 
             for node, timeline in zip(nodes, timelines):                              
-                score = node.process_clip(
-                    wav_path=timeline.test_paths[t],                                  
-                    label=timeline.test_labels[t],
-                )
-                step.node_results.append(
-                    NodeStepResult(
-                        node_id=node.node_id,                                         
-                        score=score,
-                        label=timeline.test_labels[t],                                
+                score, predicted = node.process_clip(
+                    wav_path=timeline.test_paths[t],
+                    label=timeline.test_labels[t],                                                  
+                )                                 
+                step.node_results.append(                                                           
+                    NodeStepResult(      
+                        node_id=node.node_id,
+                        machine_type=node.machine_type,
+                        score=score,    
+                        label=timeline.test_labels[t],
+                        predicted_label=predicted,                                                  
                     )
-                )
+                )   
 
         # Step 2: federation (if enabled and on interval)                             
         if federation_enabled and (t + 1) % federation_interval == 0:
             _federate(nodes_by_type)                                                  
                 
-        # Future Step 3: online separator update                                      
+        # Future Step 3: online separator update    - we  need to think about this more.                                   
         # for machine_type, nodes in nodes_by_type.items():
         #     for node in nodes:                                                      
         #         node.separator.train_step(latest_embedding)
