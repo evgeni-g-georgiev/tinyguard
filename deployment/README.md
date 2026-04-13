@@ -5,9 +5,7 @@ The device records 10 minutes of normal machine audio, trains a Gaussian Mixture
 on-chip, then continuously monitors for deviations. No pre-trained neural network weights are
 required and no data ever leaves the device.
 
-This is an Arduino port of the `gmm/` Python pipeline in this repository. It is **not** the
-CNN encoder + Deep SVDD pipeline described in the top-level README — that pipeline requires
-a pre-trained CNN stored in flash, which is a separate approach.
+This is an Arduino port of the `gmm/` Python pipeline in this repository.
 
 ---
 
@@ -143,8 +141,7 @@ single candidate it degenerates to one GMM fit.
 ### BLE disabled (ENABLE_BLE 0)
 
 The BLE stack consumes additional flash and SRAM. It is disabled in the baseline to leave
-headroom. The `config.h` flag `ENABLE_BLE` should only be set to 1 after `N_MELS` has been
-reduced to 64.
+headroom. Switch `config.h` flag `ENABLE_BLE` to 1 to enable.
 
 ### Mel filterbank pre-computed offline
 
@@ -152,24 +149,6 @@ reduced to 64.
 (`MEL_FB[128][513]`, ~256 KB of flash). It is numerically identical to the Python pipeline.
 This avoids runtime filter construction at the cost of a large flash constant. Regenerate it
 with `export_mel_filterbank.py` any time `N_FFT` or `N_MELS` changes.
-
----
-
-## Memory budget (r=1.0 baseline)
-
-| Buffer | SRAM |
-|---|---|
-| `features[1][60][128]` — training feature matrix | ~30 KB |
-| `audio_buf[1024]` + `vReal[1024]` + `vImag[1024]` — FFT scratch | ~12 KB |
-| `mel_accumulator[128]` — online log-mel mean | 512 B |
-| `resp[50][2]` — EM responsibilities (only during TRAIN) | 400 B |
-| `gm_mu[2][128]`, `gm_sigma2[2][128]`, `gm_pi[2]`, `gm_lognorm[2]` | ~2 KB |
-| `score_history[5]`, CUSUM state, misc | < 100 B |
-
-| Constant | Flash |
-|---|---|
-| `MEL_FB[128][513]` — mel filterbank | ~256 KB |
-| Sketch + Arduino runtime + libraries | ~varies |
 
 ---
 
