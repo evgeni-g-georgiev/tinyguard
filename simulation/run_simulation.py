@@ -27,7 +27,11 @@ from simulation.data.simulation_loader import load_all_timelines
 from simulation import lockstep  
 from simulation.lockstep import TimestepResult                                                    
 from simulation.reporting import make_run_dir, save_results, save_plots, save_latent_plots
-                                                                                       
+
+from simulation.memory_accountant import MemoryAccountant   
+
+
+VALID_SNRS = ("6dB", "0dB", "-6dB")                                                                                       
                                                                                     
 # ── Component construction ───────────────────────────────────────────────────       
                                                                                     
@@ -260,19 +264,47 @@ def _print_results(nodes_by_type: dict[str, list[Node]]) -> None:
         print(f"\n  Overall mean AUC: {np.mean(all_aucs):.4f}")                       
     print("=" * 60)                                                                   
 
+
+# ── SNR resolution ────────────────────────────────────────────────────────
+
+def _resolve_snr(config: dict) -> str:                                          
+    """Validate the top-level snr key and resolve {snr} placeholders.
+                                                                                                    
+    Mutates config["data"]["mimii_root"] and config["data"]["splits_dir"]
+    in-place, replacing any {snr} token with the chosen SNR. Returns the                              
+    resolved SNR string.                                                                              
+    """                                                                                               
+    snr = config.get("snr")                                                                           
+    if snr not in VALID_SNRS:                                                                         
+        raise ValueError(
+            f"Top-level config key 'snr' must be one of {VALID_SNRS}, got {snr!r}"
+        )                                                                                             
+
+    data = config["data"]                                                                             
+    data["mimii_root"] = data["mimii_root"].format(snr=snr)
+    data["splits_dir"] = data["splits_dir"].format(snr=snr)                                           
+    return snr                                                                                        
+
                                                                                     
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main(config_path: str = "simulation/configs/default.yaml"):                       
     """Load config, build components, run simulation, print results."""
+
+    # Memory allocation 
+    accountant = MemoryAccountant()                                                                              
+    accountant.snapshot("system_init")  
                                                                                     
     with open(config_path) as f:
         config = yaml.safe_load(f)                                                    
                                                                                     
     sim = config["simulation"]
-    data = config["data"]                                                             
+    data = config["data"]  
+
+    snr = _resolve_snr(config)                                                           
                 
-    print(f"Config: {config_path}")                                                   
+    print(f"Config: {config_path}") 
+    print(f"SNR:             {snr}")                                                      
     print(f"Preprocessor:    {config['preprocessor']}")
     print(f"Frozen embedder: {config['frozen_embedder']}")                            
     print(f"Separator:       {config['separator']}")
@@ -288,9 +320,30 @@ def main(config_path: str = "simulation/configs/default.yaml"):
                                                                                     
     start_time = time.time() 
 
+    # ── Auto-run split_data if splits dir for this SNR doesnt exits ──────────────────────────]
+    splits_dir = Path(data["splits_dir"])
+    if not splits_dir.exists():
+        print(f"\nSplits dir missing: {splits_dir}")
+        print(f"Running spli_data for snr={snr}...")
+        from simulation.data.split_data import split_data                        
+        try:                                                                     
+            split_data(                                                          
+                mimii_root=Path(data["mimii_root"]),                             
+                splits_dir=splits_dir,                                           
+                machine_types=data["machine_types"],                             
+            )                                                                    
+        except FileNotFoundError as e:                                           
+            raise FileNotFoundError(                                             
+                f"Cannot auto-split: {e}\n"                                      
+                f"Raw MIMII data for snr={snr} is missing. "                     
+                f"Run: python data/download_mimii.py --snr {snr}"                
+            ) from e  
+
+
+
     # Load shuffled timelines from the split directories                              
     timelines_by_type = load_all_timelines(
-        splits_dir=Path(data["splits_dir"]),                                          
+        splits_dir=splits_dir,                                          
         machine_types=data["machine_types"],                                          
         machine_ids=data["machine_ids"],
         warmup_count=sim["warmup_count"],                                             
@@ -302,9 +355,16 @@ def main(config_path: str = "simulation/configs/default.yaml"):
                 
     # Build components and nodes                                                      
     preprocessor, frozen_embedder, topology, merge = _build_shared_components(config)
-    nodes_by_type = _build_nodes(                                                     
-        config, preprocessor, frozen_embedder, topology, merge, timelines_by_type,
-    )                                                                                 
+    accountant.snapshot("embedder_loaded", frozen_embedder=frozen_embedder)                                      
+                                                                                                                   
+    nodes_by_type = _build_nodes(                                                                                
+        config, preprocessor, frozen_embedder, topology, merge, timelines_by_type,                               
+    )                                                                                                            
+    accountant.snapshot(
+        "nodes_built_pre_warmup",
+        nodes_by_type=nodes_by_type,                                                                             
+        frozen_embedder=frozen_embedder,
+    )                                                                              
                 
     # Run lockstep                                                                    
     fed = config.get("federation", {})
@@ -324,6 +384,11 @@ def main(config_path: str = "simulation/configs/default.yaml"):
                                                                                     
     _print_results(nodes_by_type)  
 
+    accountant.snapshot(
+        "post_evaluation",                                                                                       
+        nodes_by_type=nodes_by_type,
+        frozen_embedder=frozen_embedder,
+    )   
 
     runtime_seconds = time.time() - start_time
                                                                                       
@@ -345,7 +410,11 @@ def main(config_path: str = "simulation/configs/default.yaml"):
         timelines_by_type=timelines_by_type,
         config=config,                      
         run_dir=run_dir,
-    )                 
+    )
+
+    accountant.save(run_dir) 
+    
+                     
     print(f"Done. Runtime: {runtime_seconds:.1f}s")                                                   
                 
                                                                                     

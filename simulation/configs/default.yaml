@@ -48,7 +48,10 @@ twfr:    {}     # uses audio params from identity_embedder
 svdd:           
   hidden_dim:   32                                                                    
   output_dim:   8
-  threshold_percentile: 99.0
+  threshold_mode:       max_margin    # percentile | max_margin | n_sigma
+  threshold_percentile: 95.0          # used when mode = percentile
+  threshold_margin:     0.0           # used when mode = max_margin (additive)
+  n_sigma:              3.0           # used when mode = n_sigma
   holdout_fraction:     0.2 
   lr:           0.01
   weight_decay: 1.0e-4
@@ -59,7 +62,10 @@ svdd:
 gmm:
   n_components:   2                                                                   
   covariance_type: diag
-  threshold_pct:   95
+  threshold_mode:       n_sigma    # percentile | max_margin | n_sigma
+  threshold_percentile: 99.0          # used when mode = percentile
+  threshold_margin:     500.0           # used when mode = max_margin (additive)
+  n_sigma:              3.0           # used when mode = n_sigma
   seed:            42
                                                                                       
 identity_separator: {}
@@ -76,7 +82,7 @@ soft_param:
 
 # ── Simulation parameters ────────────────────────────────────────────────────       
 simulation:
-  warmup_count:   30                                                                  
+  warmup_count:   400                                                                  
   shuffle_mode:   block_fixed         # random | block_random | block_fixed
   block_size:     5                                                                   
   block_interval: 20
@@ -105,10 +111,16 @@ latent_plot:
   per_frame:    true      # render per-frame t-SNE panel                          
   per_clip:     true      # render per-clip-max-frame t-SNE panel                 
   histogram:    true      # render distance histogram panel   
-                                                                                      
+
+
+# ── SNR selection ────────────────────────────────────────────────────────────
+# Which MIMII SNR variant to run against. Must be one of: 6dB, 0dB, -6dB.
+# Resolved into data.mimii_root and data.splits_dir via {snr} placeholders.
+snr: 0dB
+
 # ── Data ─────────────────────────────────────────────────────────────────────
 data:                                                                                 
-  mimii_root:    data/mimii
-  splits_dir:    simulation/data/splits                                               
+  mimii_root:    data/mimii/{snr}
+  splits_dir:    simulation/data/splits/{snr}                                              
   machine_types: [fan, pump, slider, valve]                                           
   machine_ids:   [id_00, id_02, id_04, id_06]     
