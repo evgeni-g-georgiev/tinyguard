@@ -626,6 +626,60 @@ def _render_node_latent_figure(
     fig.savefig(latent_dir / f"{node.node_id}.png", dpi=130)
     plt.close(fig)                                                                  
 
+
+
+def _render_score_grid(
+    nodes_by_type: dict[str, list[Node]],
+    plot_config: dict,
+    latent_dir: Path,
+) -> None:
+    """Render a 4-row × 4-col grid of score-distribution histograms."""
+    machine_types = list(nodes_by_type.keys())
+    n_cols = len(machine_types)
+    n_rows = max(len(nodes) for nodes in nodes_by_type.values())
+
+    fig, axes = plt.subplots(
+        n_rows, n_cols,
+        figsize=(4 * n_cols, 3.5 * n_rows),
+    )
+
+    sample_node = next(iter(nodes_by_type.values()))[0]
+    sep_desc = sample_node.separator.description()
+    fig.suptitle(
+        f"{sep_desc}  |  score distribution",
+        fontsize=14, fontweight="bold",
+    )
+
+    for col, machine_type in enumerate(machine_types):
+        nodes = nodes_by_type[machine_type]
+        for row, node in enumerate(nodes):
+            ax = axes[row, col] if n_rows > 1 else axes[col]
+            dist = _node_distance_data(node)
+
+            ax.hist(
+                dist["normal_scores"], bins=30, alpha=0.6,
+                color="steelblue", label="Normal",
+            )
+            ax.hist(
+                dist["anomaly_scores"], bins=30, alpha=0.6,
+                color="darkorange", label="Anomaly",
+            )
+            if dist["threshold"] is not None:
+                ax.axvline(
+                    dist["threshold"], color="firebrick",
+                    linestyle="--", linewidth=1.2,
+                    label=f"thr={dist['threshold']:.2f}",
+                )
+            ax.set_title(f"{node.machine_type} {node.machine_id}", fontsize=10)
+            ax.tick_params(axis="both", labelsize=7)
+            ax.grid(alpha=0.3)
+            if row == 0 and col == 0:
+                ax.legend(loc="best", fontsize=6)
+
+    fig.tight_layout()
+    fig.savefig(latent_dir / "grid_scores.png", dpi=110)
+    plt.close(fig)
+
                                                                                     
 def _render_latent_grid(
     nodes_by_type: dict[str, list[Node]],
@@ -761,4 +815,7 @@ timeline)
     if plot_config.get("per_clip", True):
         _render_latent_grid(
             nodes_by_type, captured_by_node, "per_clip", plot_config, latent_dir,
-        )      
+        )     
+    
+    print("\nRendering score distribution grid...")                             
+    _render_score_grid(nodes_by_type, plot_config, latent_dir)
