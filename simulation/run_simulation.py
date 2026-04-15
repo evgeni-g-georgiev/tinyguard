@@ -14,7 +14,9 @@ from pathlib import Path
 import numpy as np
 import yaml
 from sklearn.metrics import roc_auc_score  
-import time                                            
+import time      
+from collections import defaultdict
+from dataclasses import dataclass                                       
 
 from simulation.registry import (                                                     
     create_embedder,
@@ -31,7 +33,17 @@ from simulation.reporting import make_run_dir, save_results, save_plots, save_la
 from simulation.memory_accountant import MemoryAccountant   
 
 
-VALID_SNRS = ("6dB", "0dB", "-6dB")                                                                                       
+VALID_SNRS = ("6dB", "0dB", "-6dB")    
+
+
+@dataclass(frozen=True)
+class NodeMetrics:
+    auc:       float
+    precision: float
+    recall:    float
+    f1:        float
+    tp: int; tn: int; fp: int; fn: int
+
                                                                                     
 # ── Component construction ───────────────────────────────────────────────────       
                                                                                     
@@ -225,44 +237,65 @@ def _format_step(result: TimestepResult, machine_types: list[str]) -> str:
                 
 # ── Results ──────────────────────────────────────────────────────────────────
 
-def _print_results(nodes_by_type: dict[str, list[Node]]) -> None:                     
+def _node_metrics(node: Node) -> NodeMetrics | None:
+    """Return metrics for a node, or None if single-class."""
+    if len(set(node.labels)) < 2:
+        return None
+
+    auc = roc_auc_score(node.labels, node.scores)
+    tp = sum(l == 1 and p == 1 for l, p in zip(node.labels, node.predictions))
+    tn = sum(l == 0 and p == 0 for l, p in zip(node.labels, node.predictions))
+    fp = sum(l == 0 and p == 1 for l, p in zip(node.labels, node.predictions))
+    fn = sum(l == 1 and p == 0 for l, p in zip(node.labels, node.predictions))
+
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1        = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+
+    return NodeMetrics(auc=auc, precision=precision, recall=recall, f1=f1,
+                       tp=tp, tn=tn, fp=fp, fn=fn)
+
+
+def _format_node_row(node_id: str, m: NodeMetrics) -> str:
+    return (f"  {node_id}: AUC={m.auc:.4f}  "
+            f"|  TP={m.tp:3d} TN={m.tn:3d} FP={m.fp:3d} FN={m.fn:3d}  "
+            f"|  P={m.precision:.3f} R={m.recall:.3f} F1={m.f1:.3f}")
+
+
+def _format_mean_row(label: str, metrics: list[NodeMetrics]) -> str:
+    return (f"  {label:12s} mean  "
+            f"AUC={np.mean([m.auc       for m in metrics]):.4f}  "
+            f"P={np.mean([m.precision   for m in metrics]):.3f}  "
+            f"R={np.mean([m.recall      for m in metrics]):.3f}  "
+            f"F1={np.mean([m.f1         for m in metrics]):.3f}")
+
+
+def _print_results(nodes_by_type: dict[str, list[Node]]) -> None:
     """Compute and print AUC per node and per machine type."""
-    print("\n" + "=" * 60)                                                            
+    print("\n" + "=" * 60)
     print("Results")
-    print("=" * 60)                                                                   
-                
-    type_aucs: dict[str, list[float]] = {}                                            
+    print("=" * 60)
 
-    for machine_type, nodes in nodes_by_type.items():                                 
-        type_aucs[machine_type] = []
-                                                                                    
+    type_metrics: dict[str, list[NodeMetrics]] = defaultdict(list)
+
+    for machine_type, nodes in nodes_by_type.items():
         for node in nodes:
-            if len(set(node.labels)) < 2:                                             
+            m = _node_metrics(node)
+            if m is None:
                 print(f"  {node.node_id}: AUC = N/A (single class)")
-                continue                                                              
+                continue
+            type_metrics[machine_type].append(m)
+            print(_format_node_row(node.node_id, m))
 
-            auc = roc_auc_score(node.labels, node.scores)                             
-            type_aucs[machine_type].append(auc)
-            print(f"  {node.node_id}: AUC = {auc:.4f}")  
+    print("-" * 60)
+    for machine_type, metrics in type_metrics.items():
+        print(_format_mean_row(machine_type, metrics))
 
-            # Confustion 
-            tp = sum(1 for l, p in zip(node.labels, node.predictions) if l == 1 and p == 1)
-            tn = sum(1 for l, p in zip(node.labels, node.predictions) if l == 0 and p == 0)         
-            fp = sum(1 for l, p in zip(node.labels, node.predictions) if l == 0 and p == 1)         
-            fn = sum(1 for l, p in zip(node.labels, node.predictions) if l == 1 and p == 0)         
-                                                                                                    
-            print(f"  {node.node_id}: AUC = {auc:.4f}  "                                            
-                f"|  TP={tp:3d} TN={tn:3d} FP={fp:3d} FN={fn:3d}")                              
-                
-    print("-" * 60)                                                                   
-    for machine_type, aucs in type_aucs.items():
-        if aucs:                                                                      
-            print(f"  {machine_type} mean AUC: {np.mean(aucs):.4f}")
-                                                                                    
-    all_aucs = [a for aucs in type_aucs.values() for a in aucs]                       
-    if all_aucs:                                                                      
-        print(f"\n  Overall mean AUC: {np.mean(all_aucs):.4f}")                       
-    print("=" * 60)                                                                   
+    all_metrics = [m for metrics in type_metrics.values() for m in metrics]
+    if all_metrics:
+        print("\n" + _format_mean_row("Overall", all_metrics))
+
+    print("=" * 60)
 
 
 # ── SNR resolution ────────────────────────────────────────────────────────
