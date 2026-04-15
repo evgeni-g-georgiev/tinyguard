@@ -12,7 +12,10 @@ from simulation.inference_models.base_on_device_separator import BaseOnDeviceSep
 
 @register_separator("identity")
 class IdentitySeparator(BaseOnDeviceSeparator):
-
+                                                                                
+    def __init__(self, **kwargs):
+        pass                                                                    
+                
     def calibrate(self, warmup_embeddings: list[np.ndarray]) -> None:
         pass
 

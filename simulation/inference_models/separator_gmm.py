@@ -31,7 +31,11 @@ class GMMSeparator(BaseOnDeviceSeparator):
         self,
         n_components: int = 2,                                                      
         covariance_type: str = "diag",
-        threshold_pct: int = 95,                                                    
+        threshold_pct: int = 95,              #NOTE: I am not change his coder here, will have to go back and clean all this.  
+        threshold_mode: str = "max_margin",
+        threshold_percentile: float = 95.0,
+        threshold_margin: float = 0.0,     
+        n_sigma: float = 3.0,                                    
         seed: int = 42,
         holdout_fraction: float = 0.2,                                              
     ):                                                                              
@@ -40,6 +44,10 @@ class GMMSeparator(BaseOnDeviceSeparator):
         self.threshold_pct = threshold_pct
         self.seed = seed                                                            
         self.holdout_fraction = holdout_fraction
+        self.threshold_mode = threshold_mode
+        self.threshold_percentile = threshold_percentile
+        self.threshold_margin = threshold_margin
+        self.n_sigma = n_sigma
                                                                                     
         self.detector: GMMDetector | None = None
         self.threshold: float | None = None
@@ -71,9 +79,13 @@ class GMMSeparator(BaseOnDeviceSeparator):
         )
         self.detector.fit(train_clips, val_log_mels=holdout_clips)                  
                 
+        
         # Surface the detector's threshold under our own attribute name             
         # so Node.process_clip can compute predicted_label uniformly.
-        self.threshold = self.detector.threshold_                                   
+        # self.threshold = self.detector.threshold_       
+        # Creating new threshold based not based on egings code. (take out comment later) 
+        holdout_scores = list(map(self.detector.score, holdout_clips))
+        self.threshold = self._compute_threshold(holdout_scores)                           
                 
     def score(self, clip_log_mel: np.ndarray) -> float:                             
         """Score a single clip's log-mel spectrogram via NLL under the GMM.

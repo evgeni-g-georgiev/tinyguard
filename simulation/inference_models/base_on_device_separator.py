@@ -38,7 +38,19 @@ class BaseOnDeviceSeparator(ABC):
         Returns: 
             Anomaly score as float. 
         """
-    
+
+    def _compute_threshold(self, scores: list[float]) -> float:
+        """Compute detection threshold from holdout scores using the configured mode."""
+        match self.threshold_mode:
+            case "percentile": return float(np.percentile(scores, self.threshold_percentile))
+            case "max_margin": return float(np.max(scores)) + self.threshold_margin
+            case "n_sigma":    return float(np.mean(scores) + self.n_sigma * np.std(scores))
+            case _:
+                raise ValueError(
+                    f"Unknown threshold_mode '{self.threshold_mode}'. "
+                    f"Expected: percentile, max_margin, n_sigma"
+                )
+        
     @abstractmethod
     def get_shareable_state(self) -> dict:
         """Return state to share with neighbours during federation."""

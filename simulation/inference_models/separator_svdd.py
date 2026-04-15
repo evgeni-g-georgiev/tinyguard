@@ -23,7 +23,10 @@ class SVDDSeparator(BaseOnDeviceSeparator):
         lr: float = 0.01,
         weight_decay: float = 1e-4,
         epochs: int = 50,
+        threshold_mode: str = "max_margin",
         threshold_percentile: float = 95.0,
+        threshold_margin: float = 0.0,
+        n_sigma: float = 3.0,
         holdout_fraction: float = 0.2,
         batch_size: int = 32,
         seed: int = 42,
@@ -31,7 +34,10 @@ class SVDDSeparator(BaseOnDeviceSeparator):
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.output_dim = output_dim
+        self.threshold_mode = threshold_mode
         self.threshold_percentile = threshold_percentile
+        self.threshold_margin = threshold_margin 
+        self.n_sigma = n_sigma
         self.holdout_fraction = holdout_fraction
 
         self.train_kwargs = dict(
@@ -68,9 +74,9 @@ class SVDDSeparator(BaseOnDeviceSeparator):
 
         # Use the held-out unsesen normals to capture the threshold [Add later some std]
         holdout_scores = list(map(self.score, holdout_clips))
-        self.threshold = float(
-            np.percentile(holdout_scores, self.threshold_percentile)
-        )
+        self.threshold = self._compute_threshold(holdout_scores)
+
+
 
 
     def score(self, clip_embedding: np.ndarray) -> float: 
