@@ -296,12 +296,18 @@ def main():
         description="Split MIMII into warmup/test_normal/test_abnormal"
     )
     parser.add_argument(
+        "--snr", default="6dB",
+        choices=["6dB", "0dB", "-6dB"],
+        help="Which MIMII SNR variant to split (defual:6dB). "
+            "The SNR is appended to both --mimii-root and --splits-dir.",
+    )
+    parser.add_argument(
         "--mimii-root", type=Path, default=Path("data/mimii"),
-        help="Path to extracted MIMII data",                                          
+        help="Path to extracted MIMII data ( SNR subdir is appended).",                                          
     )
     parser.add_argument(                                                              
         "--splits-dir", type=Path, default=Path("simulation/data/splits"),            
-        help="Output directory for splits",
+        help="Output directory for splits (SNR subdir is appended).",
     )                                                                                 
     parser.add_argument(
         "--machine-types", nargs="+",
@@ -309,10 +315,17 @@ def main():
         help="Machine types to include",
     )                                                                                 
     args = parser.parse_args()
+
+    mimii_root = args.mimii_root /args.snr 
+    splits_dir = args.splits_dir / args.snr
+
+    print(f"SNR: {args.snr}")                                                     
+    print(f"  mimii_root: {mimii_root}")                                        
+    print(f"  splits_dir: {splits_dir}")  
                                                                                     
     split_data( 
-        mimii_root=args.mimii_root,
-        splits_dir=args.splits_dir,
+        mimii_root=mimii_root,
+        splits_dir=splits_dir,
         machine_types=args.machine_types,
     )                                                                                 
 
