@@ -2,15 +2,26 @@
 plot.py — Timeline plots for TWFR-GMM anomaly detection results.
 
 Produces per-machine scatter plots with an identical visual style to
-inference/run.py::plot_machine(). The same color palette, axis labels,
+inference/run.py::plot_machine().  The same colour palette, axis labels,
 annotation arrows, and grid settings are used so results from the two
 pipelines can be compared side-by-side.
 
-The only visual difference from the SVDD plots is the figure subtitle,
-which reports GMM metadata (r, n_components) instead of SVDD parameter count.
+Works for all three detector variants:
+  Node A       — y-axis label "Anomaly score (NLL)", subtitle "r=1.0 mean pooling"
+  Node B       — y-axis label "Anomaly score (NLL)", subtitle "r=0.5 GWRP"
+  NodeLearning — y-axis label "Anomaly score (fused z-score)", subtitle "r=1.0/0.5 fusion"
 
-This module has no repo-level imports — all required data is passed as
-arguments. This makes it trivially testable in isolation.
+Dynamic labels are injected by train.py via result["r_desc"] and
+result["score_label"] keys.  This module reads those keys and falls back to
+sensible defaults if absent, so it never needs to know which variant produced
+the result.
+
+Rolling-mean overlay: if events contain a "rolling_mean" field, a grey line is
+overlaid on the scatter.  This mirrors the Serial diagnostic output in
+tinyml_gmm.ino and aids visual inspection without affecting detection logic.
+
+This module has no repo-level imports — all required data is passed as arguments,
+making it trivially usable in isolation.
 
 Dependencies: matplotlib, numpy, pathlib, sklearn.metrics.
 """
@@ -73,8 +84,11 @@ def plot_machine(
     threshold     = result["threshold"]
     round_results = result["round_results"]
     n_rounds      = result["n_rounds"]
-    r             = result.get("r", float("nan"))
     n_components  = result.get("n_components", "?")
+    # CUSUM parameters — read from the first round_result (same for all rounds).
+    first_rr  = round_results[0] if round_results else {}
+    cusum_h   = first_rr.get("cusum_h", float("nan"))
+    cusum_k   = first_rr.get("cusum_k", float("nan"))
 
     # Converts stored minutes back to seconds for x-axis (matches inference/run.py)
     ts = lambda e: e["t"] * 60
@@ -123,6 +137,14 @@ def plot_machine(
             color=_COL_ANOMALY, s=20, alpha=0.8, zorder=2, label="Anomaly clips",
         )
 
+    # Rolling mean overlay (diagnostic only — mirrors Serial output in C++).
+    # Only drawn when events contain the "rolling_mean" field.
+    if events and "rolling_mean" in events[0]:
+        rm_t      = [ts(e) for e in events]
+        rm_scores = [e["rolling_mean"] for e in events]
+        ax.plot(rm_t, rm_scores, color="#555555", linewidth=0.9, alpha=0.5,
+                zorder=3, label=f"Rolling mean (w={5})")
+
     # Detection threshold line
     ax.axhline(
         threshold, color=_COL_THRESHOLD, linestyle="--", linewidth=1.3,
@@ -156,8 +178,9 @@ def plot_machine(
             )
 
     # ── Axes formatting ───────────────────────────────────────────────────────
+    score_label = result.get("score_label", "Anomaly score  (NLL)")
     ax.set_xlabel("Time (seconds)", fontsize=10)
-    ax.set_ylabel("Anomaly score  (NLL)", fontsize=10)
+    ax.set_ylabel(score_label, fontsize=10)
     ax.set_xlim(left=0)
     ax.margins(y=0.2)
     ax.grid(alpha=0.25, linewidth=0.5)
@@ -171,11 +194,13 @@ def plot_machine(
         f"AUC={auc:.3f}",
         fontsize=9, color="#333333",
     )
+    r_desc = result.get("r_desc", f"r={result.get('r', '?')} mean pooling")
     fig.suptitle(
         "TinyML Deployment Simulation — Anomalous Sound Detection\n"
         f"Arduino Nano 33 BLE  |  "
-        f"GMM (r={r:.2f}, {n_components} component{'s' if n_components != 1 else ''})  |  "
-        f"TWFR features",
+        f"GMM ({n_components} component{'s' if n_components != 1 else ''}, "
+        f"{r_desc})  |  "
+        f"CUSUM k={cusum_k:.3f}  h={cusum_h:.3f}",
         fontsize=11, fontweight="bold",
     )
 

@@ -1,41 +1,60 @@
 #!/usr/bin/env python3
 """
-train.py — Train and evaluate TWFR-GMM anomaly detectors for all 16 MIMII machines.
+train.py — Train and compare TWFR-GMM detectors across all 16 MIMII machines.
 
-Simulates the on-device deployment cycle using the same 60-clip training window
-and 3-round monitoring evaluation as the SVDD pipeline (separator/train.py +
-inference/run.py), allowing direct comparison of results.
+Runs three detector variants per machine and prints a side-by-side comparison:
 
-For each machine:
-  1. Load 60 normal training clips, compute full-clip log-mel spectrograms.
-  2. Fit a GMMDetector (self-supervised r search + GMM fit + threshold).
-  3. Save the fitted artefact as {mtype}_{mid}.pkl.
-  4. Evaluate on test normal and abnormal clips (3 rounds × 5 min each).
-  5. Generate a timeline plot and accumulate metrics.
+  node_a       — Single node, r=NODE_R_A (=1.0, deployment-faithful mean pooling).
+                 This is the hardware baseline: the only mode runnable on a single
+                 Arduino Nano 33 BLE without exceeding its 256 KB SRAM budget.
 
-Results are written to results.yaml in the output directory. The YAML schema
-is identical to inference/outputs/inference/results.yaml, with one additional
-field per machine (``r`` — the selected GWRP decay parameter).
+  node_b       — Single node, r=NODE_R_B (=0.5, energy-weighted GWRP).
+                 Requires a second physical device (full spectrogram buffer needed).
+
+  node_learning — Two-node NodeLearning system: both nodes train independently,
+                  then exchange confidence signals (μ_val, σ_val) and fuse their
+                  z-normalised anomaly scores with fit-quality weights.
+                  Implements the "collaborative learning" regime of the Node Learning
+                  paradigm (Kanjo & Aslanov, 2026, §2, Figure 2).
+
+Node Learning workflow (per machine)
+-------------------------------------
+  1. Load N_FIT_CLIPS normal clips.  Extract features at r=NODE_R_A for Node A
+     and r=NODE_R_B for Node B independently.
+  2. Each node fits its own 2-component diagonal GMM locally (eq. 1-2).
+  3. Each node calibrates threshold and CUSUM from N_VAL_CLIPS held-out clips,
+     storing (μ_val, σ_val) as confidence signals.
+  4. NodeLearning reads these signals, computes fit-quality weights
+     w_i = softmax(−μ_val_i), and calibrates a fused CUSUM on the weighted
+     z-score distribution (eq. 3, 5).
+  5. Evaluate all three variants on the same test set.
+  6. Save artefacts, plots, and YAML summaries.
 
 Usage
 -----
-    python gmm/train.py                          # r search, 2 GMM components
-    python gmm/train.py --r 1.0                  # fix r (mean pooling)
-    python gmm/train.py --r 0.0                  # fix r (max pooling)
-    python gmm/train.py --n-components 1         # single Gaussian
-    python gmm/train.py --verbose                # print per-r log-likelihoods
-    python gmm/train.py --out-dir /tmp/gmm_test  # custom output directory
+  python gmm/train.py                           # -6 dB dataset (default)
+  python gmm/train.py --dataset 0db             # 0 dB dataset
+  python gmm/train.py --dataset 6db             # +6 dB dataset
+  python gmm/train.py --verbose                 # print per-machine calibration
+  python gmm/train.py --dataset 0db --verbose
 
 Inputs
 ------
-  preprocessing/outputs/mimii_splits/splits.json   fixed train/test manifest
-  data/mimii/                                       MIMII WAV files
+  preprocessing/outputs/mimii_splits/splits_{dataset}.json
+  data/mimii_{dataset}/
 
-Outputs
+Outputs  (all overwrite on re-run — no stale files accumulate)
 -------
-  gmm/outputs/gmm/{mtype}_{mid}.pkl    fitted detector artefacts (×16)
-  gmm/outputs/gmm/{mtype}_{mid}.png   per-machine timeline plots   (×16)
-  gmm/outputs/gmm/results.yaml         aggregate metrics
+  gmm/outputs/{dataset}/node_a/
+      {mtype}_{mid}.pkl    — fitted GMMDetector artefacts  (×16)
+      {mtype}_{mid}.png    — timeline plots                (×16)
+      results.yaml         — per-machine metrics
+  gmm/outputs/{dataset}/node_b/
+      (same structure)
+  gmm/outputs/{dataset}/node_learning/
+      {mtype}_{mid}.png    — timeline plots (fused z-score)(×16)
+      results.yaml
+  gmm/outputs/{dataset}/comparison.yaml  — full 3-way comparison
 """
 
 import argparse
@@ -49,85 +68,163 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
-    GMM_DIR,
+    GMM_6DB_DIR,
+    GMM_0DB_DIR,
+    GMM_NEG6DB_DIR,
     MACHINE_IDS,
     MACHINE_TYPES,
-    MIMII_ROOT,
-    MIMII_SPLITS,
+    MIMII_6DB_ROOT,
+    MIMII_0DB_ROOT,
+    MIMII_NEG6DB_ROOT,
+    MIMII_6DB_SPLITS,
+    MIMII_0DB_SPLITS,
+    MIMII_NEG6DB_SPLITS,
 )
+from gmm.config import N_FIT_CLIPS, N_TRAIN_CLIPS, N_VAL_CLIPS, NODE_R_A, NODE_R_B
 from gmm.detector import GMMDetector
 from gmm.evaluate import evaluate_machine
 from gmm.features import load_log_mel
+from gmm.node_learning import NodeLearning
 from gmm.plot import plot_machine
+
+
+# ── Dataset registry ──────────────────────────────────────────────────────────
+# Maps the --dataset argument to (MIMII_ROOT, SPLITS_PATH, OUTPUT_DIR).
+# Adding a new dataset variant requires only a new entry here and corresponding
+# constants in the root config.py.
+
+_DATASET_CONFIG = {
+    "neg6db": (MIMII_NEG6DB_ROOT, MIMII_NEG6DB_SPLITS, GMM_NEG6DB_DIR),
+    "0db":    (MIMII_0DB_ROOT,    MIMII_0DB_SPLITS,    GMM_0DB_DIR),
+    "6db":    (MIMII_6DB_ROOT,    MIMII_6DB_SPLITS,    GMM_6DB_DIR),
+}
 
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Train TWFR-GMM anomaly detectors for all 16 MIMII machines.",
+        description=(
+            "Train and compare TWFR-GMM detectors for all 16 MIMII machines.\n"
+            "Runs three variants: single-node r=NODE_R_A, single-node r=NODE_R_B,\n"
+            "and two-node NodeLearning (collaborative inference)."
+        ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        "--splits", type=str, default=str(MIMII_SPLITS),
-        help="Path to the splits.json manifest.",
+        "--dataset",
+        choices=list(_DATASET_CONFIG),
+        default="neg6db",
+        help="Which MIMII SNR dataset to use.",
     )
     parser.add_argument(
-        "--out-dir", type=str, default=str(GMM_DIR),
-        help="Output directory for .pkl artefacts, .png plots, and results.yaml.",
+        "--splits", type=str, default=None,
+        help="Override path to splits JSON (default: inferred from --dataset).",
     )
     parser.add_argument(
-        "--n-components", type=int, default=2,
-        help="Number of Gaussian mixture components.",
-    )
-    parser.add_argument(
-        "--r", type=float, default=None,
-        help=(
-            "Fix the GWRP decay parameter r ∈ [0, 1]. "
-            "If omitted, self-supervised r search is performed per machine "
-            "(recommended — no anomaly labels required)."
-        ),
-    )
-    parser.add_argument(
-        "--threshold-pct", type=int, default=95,
-        help="Percentile of training NLL scores used as the detection threshold.",
-    )
-    parser.add_argument(
-        "--seed", type=int, default=42,
-        help="Random seed for GMM initialisation.",
+        "--out-dir", type=str, default=None,
+        help="Override output root directory (default: inferred from --dataset).",
     )
     parser.add_argument(
         "--verbose", action="store_true",
-        help="Print per-r mean log-likelihoods during the self-supervised r search.",
+        help="Print per-machine calibration parameters and node weights.",
     )
     return parser
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _load_clips(paths: list[str], desc: str) -> list:
+    """Load log-mel spectrograms, skipping files that fail to load."""
+    log_mels: list = []
+    for path in tqdm(paths, desc=desc, leave=False, unit="clip"):
+        try:
+            log_mels.append(load_log_mel(path))
+        except RuntimeError as exc:
+            print(f"    Warning: {exc}", file=sys.stderr)
+    return log_mels
+
+
+def _round_summary(round_results: list[dict]) -> str:
+    """Format per-round metrics as a single console line."""
+    parts = []
+    for rr in round_results:
+        delay = f"{rr['detection_delay_secs']}s" if rr["detected"] else "miss"
+        parts.append(f"R{rr['round']}:FA={rr['n_false_pos']},delay={delay}")
+    return "  ".join(parts)
+
+
+def _result_row(result: dict | None) -> dict:
+    """Extract aggregate scalar metrics from an evaluate_machine result dict."""
+    if result is None:
+        return {"detected": 0, "total": 0, "n_fp": 0, "n_norm": 0, "delays": []}
+    rrs = result["round_results"]
+    return {
+        "detected": sum(1 for rr in rrs if rr["detected"]),
+        "total":    len(rrs),
+        "n_fp":     sum(rr["n_false_pos"] for rr in rrs),
+        "n_norm":   sum(rr["n_normal_clips"] for rr in rrs),
+        "delays":   [rr["detection_delay_secs"] for rr in rrs if rr["detected"]],
+    }
+
+
+def _augment_result(result: dict, r_desc: str, score_label: str) -> dict:
+    """Inject plot metadata keys into an evaluate_machine result dict."""
+    result["r_desc"]      = r_desc
+    result["score_label"] = score_label
+    return result
+
+
+def _collect_yaml_entry(result: dict, det) -> dict:
+    """Build the per-machine YAML entry for one variant."""
+    return {
+        "threshold": round(float(det.threshold_), 5),
+        "cusum_k":   round(float(det.cusum_k_), 5),
+        "cusum_h":   round(float(det.cusum_h_), 5),
+        "n_rounds":  result["n_rounds"],
+        "rounds":    result["round_results"],
+    }
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    args = _build_parser().parse_args()
+    args        = _build_parser().parse_args()
+    mimii_root, splits_default, out_default = _DATASET_CONFIG[args.dataset]
 
-    # ── Validate inputs ───────────────────────────────────────────────────────
-    splits_path = Path(args.splits)
+    splits_path = Path(args.splits)  if args.splits  else splits_default
+    out_root    = Path(args.out_dir) if args.out_dir else out_default
+
     if not splits_path.exists():
         print(f"ERROR: Splits manifest not found at {splits_path}")
-        print("Run:  python preprocessing/split_mimii.py")
+        print(
+            f"Run:  python preprocessing/split_mimii.py "
+            f"--data-root {mimii_root} --out {splits_path}"
+        )
         sys.exit(1)
 
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    # Output subdirectories — created fresh, overwrite on re-run.
+    dir_node_a        = out_root / "node_a"
+    dir_node_b        = out_root / "node_b"
+    dir_node_learning = out_root / "node_learning"
+    for d in (dir_node_a, dir_node_b, dir_node_learning):
+        d.mkdir(parents=True, exist_ok=True)
 
     with open(splits_path) as f:
         splits = json.load(f)
 
-    r_desc = f"r={args.r:.2f}" if args.r is not None else "r=auto (self-supervised search)"
     print(
-        f"TWFR-GMM  |  {args.n_components} component(s)  |  {r_desc}  |  "
-        f"threshold={args.threshold_pct}th pct\n"
+        f"TWFR-GMM Node Learning comparison  [{args.dataset}]\n"
+        f"  Node A: r={NODE_R_A} (mean pooling, hardware baseline)\n"
+        f"  Node B: r={NODE_R_B} (energy-weighted GWRP)\n"
+        f"  fit clips={N_FIT_CLIPS}  val clips={N_VAL_CLIPS}  "
+        f"(mirrors deployment/config.h)\n"
     )
 
-    all_results: dict = {}
+    results_node_a:        dict = {}
+    results_node_b:        dict = {}
+    results_node_learning: dict = {}
+    comparison:            dict = {}
 
     # ── Per-machine loop ──────────────────────────────────────────────────────
     for mtype in MACHINE_TYPES:
@@ -139,129 +236,197 @@ def main() -> None:
 
             print(f"  [{key}]")
 
-            # 1. Load training clips and compute log-mel spectrograms.
-            #    The last VAL_CLIPS are held out for threshold calibration only;
-            #    the GMM is fit on the remaining clips. This prevents the GMM
-            #    from scoring its own training data for threshold setting, which
-            #    causes artificially negative NLLs and a threshold that no test
-            #    clip can reach (100% FP).
-            VAL_CLIPS = 10
-            all_paths = [str(MIMII_ROOT / p) for p in splits[key]["train_normal"]]
-            fit_paths = all_paths[:-VAL_CLIPS]
-            val_paths = all_paths[-VAL_CLIPS:]
+            # Load training clips.
+            # The manifest provides N_TRAIN_CLIPS=60 normal clips.
+            # The last N_VAL_CLIPS=10 are held out for calibration;
+            # the GMM is fit on the first N_FIT_CLIPS=50.
+            all_paths = [str(mimii_root / p) for p in splits[key]["train_normal"]]
+            if len(all_paths) < N_TRAIN_CLIPS:
+                print(
+                    f"    WARNING: expected {N_TRAIN_CLIPS} train clips, "
+                    f"got {len(all_paths)}."
+                )
 
-            fit_log_mels: list = []
-            for path in tqdm(fit_paths, desc="    load fit", leave=False, unit="clip"):
-                try:
-                    fit_log_mels.append(load_log_mel(path))
-                except RuntimeError as exc:
-                    print(f"    Warning: {exc}", file=sys.stderr)
+            fit_paths = all_paths[:N_FIT_CLIPS]
+            val_paths = all_paths[N_FIT_CLIPS:N_FIT_CLIPS + N_VAL_CLIPS]
 
-            val_log_mels: list = []
-            for path in tqdm(val_paths, desc="    load val", leave=False, unit="clip"):
-                try:
-                    val_log_mels.append(load_log_mel(path))
-                except RuntimeError as exc:
-                    print(f"    Warning: {exc}", file=sys.stderr)
+            fit_log_mels = _load_clips(fit_paths, "    load fit")
+            val_log_mels = _load_clips(val_paths, "    load val")
 
             if not fit_log_mels:
-                print(f"    No valid training clips — skipping.\n")
+                print(f"    No valid fit clips — skipping.\n")
+                continue
+            if not val_log_mels:
+                print(f"    No valid val clips — skipping.\n")
                 continue
 
-            # 2. Fit detector: r search (if args.r is None) + GMM + threshold.
-            #    val_log_mels is passed so threshold is calibrated on held-out data.
-            detector = GMMDetector(
-                n_components=args.n_components,
-                threshold_pct=args.threshold_pct,
-                seed=args.seed,
-            )
-            detector.fit(
-                fit_log_mels,
-                r=args.r,
-                verbose=args.verbose,
-                val_log_mels=val_log_mels if val_log_mels else None,
-            )
+            # ── Step 1: Fit Node A (single-node, r=NODE_R_A) ─────────────────
+            # Local adaptation: θ_A = U_A(D_fit, c_A=r=1.0)  (paper eq. 1-2)
+            det_a = GMMDetector(r=NODE_R_A)
+            det_a.fit(fit_log_mels, val_log_mels)
+            det_a.save(dir_node_a / f"{mtype}_{mid}.pkl")
 
-            # 3. Save artefact
-            artefact_path = out_dir / f"{mtype}_{mid}.pkl"
-            detector.save(artefact_path)
+            # ── Step 2: Fit Node B (single-node, r=NODE_R_B) ─────────────────
+            # Local adaptation: θ_B = U_B(D_fit, c_B=r=0.5)  (paper eq. 1-2)
+            det_b = GMMDetector(r=NODE_R_B)
+            det_b.fit(fit_log_mels, val_log_mels)
+            det_b.save(dir_node_b / f"{mtype}_{mid}.pkl")
 
-            # 4. Evaluate: alternating normal/anomaly monitoring rounds
-            result = evaluate_machine(mtype, mid, detector, splits)
-            if result is None:
-                print(f"    Evaluation skipped (key missing from splits).\n")
+            # ── Step 3: Build NodeLearning (pairwise collaborative inference) ─
+            # Nodes exchange confidence signals (μ_val, σ_val) and calibrate
+            # a fused CUSUM.  Paper eq. 3 (merge operator) and eq. 5
+            # (context-weighted interaction).
+            node_learning = NodeLearning(det_a, det_b)
+
+            if args.verbose:
+                print(
+                    f"    Node A (r={NODE_R_A}): "
+                    f"thr={det_a.threshold_:.4f}  "
+                    f"cusum_h={det_a.cusum_h_:.4f}  "
+                    f"μ_val={det_a.mu_val_:.4f}"
+                )
+                print(
+                    f"    Node B (r={NODE_R_B}): "
+                    f"thr={det_b.threshold_:.4f}  "
+                    f"cusum_h={det_b.cusum_h_:.4f}  "
+                    f"μ_val={det_b.mu_val_:.4f}"
+                )
+                print(
+                    f"    NodeLearning: "
+                    f"w_A={node_learning.w_a_:.4f}  w_B={node_learning.w_b_:.4f}  "
+                    f"thr={node_learning.threshold_:.4f}  "
+                    f"cusum_h={node_learning.cusum_h_:.4f}"
+                )
+
+            # ── Step 4: Evaluate all three variants on the same test set ──────
+            res_a = evaluate_machine(mtype, mid, det_a,         splits, mimii_root)
+            res_b = evaluate_machine(mtype, mid, det_b,         splits, mimii_root)
+            res_f = evaluate_machine(mtype, mid, node_learning, splits, mimii_root)
+
+            if res_a is None or res_b is None or res_f is None:
+                print(f"    Evaluation skipped.\n")
                 continue
 
-            # 5. Plot timeline
-            plot_path = plot_machine(result, mtype, mid, out_dir)
+            # ── Step 5: Inject plot metadata and save timeline PNGs ──────────
+            _augment_result(res_a, f"r={NODE_R_A} mean pooling", "Anomaly score  (NLL)")
+            _augment_result(res_b, f"r={NODE_R_B} GWRP",         "Anomaly score  (NLL)")
+            _augment_result(res_f, f"r={NODE_R_A}/{NODE_R_B} node learning",
+                            "Anomaly score  (fused z-score)")
 
-            # 6. Collect results for YAML export
-            all_results[key] = {
-                "threshold": round(float(detector.threshold_), 5),
-                "r":         round(float(detector.r_), 4),
-                "n_rounds":  result["n_rounds"],
-                "rounds":    result["round_results"],
+            plot_machine(res_a, mtype, mid, dir_node_a)
+            plot_machine(res_b, mtype, mid, dir_node_b)
+            plot_machine(res_f, mtype, mid, dir_node_learning)
+
+            # ── Step 6: Collect results for YAML export ───────────────────────
+            results_node_a[key]        = _collect_yaml_entry(res_a, det_a)
+            results_node_b[key]        = _collect_yaml_entry(res_b, det_b)
+            results_node_learning[key] = _collect_yaml_entry(res_f, node_learning)
+
+            row_a = _result_row(res_a)
+            row_b = _result_row(res_b)
+            row_f = _result_row(res_f)
+
+            comparison[key] = {
+                "node_a": {
+                    "r":      NODE_R_A,
+                    "det":    row_a["detected"],
+                    "total":  row_a["total"],
+                    "n_fp":   row_a["n_fp"],
+                    "n_norm": row_a["n_norm"],
+                    "delays": row_a["delays"],
+                },
+                "node_b": {
+                    "r":      NODE_R_B,
+                    "det":    row_b["detected"],
+                    "total":  row_b["total"],
+                    "n_fp":   row_b["n_fp"],
+                    "n_norm": row_b["n_norm"],
+                    "delays": row_b["delays"],
+                },
+                "node_learning": {
+                    "r":      f"{NODE_R_A}/{NODE_R_B}",
+                    "w_a":    round(node_learning.w_a_, 4),
+                    "w_b":    round(node_learning.w_b_, 4),
+                    "det":    row_f["detected"],
+                    "total":  row_f["total"],
+                    "n_fp":   row_f["n_fp"],
+                    "n_norm": row_f["n_norm"],
+                    "delays": row_f["delays"],
+                },
             }
 
-            # Console summary for this machine
             print(
-                f"    r={detector.r_:.2f}  "
-                f"threshold={detector.threshold_:.4f}  "
-                f"→ {artefact_path.name}"
+                f"    Node A (r={NODE_R_A}):   "
+                f"{_round_summary(res_a['round_results'])}"
             )
-            for rr in result["round_results"]:
-                delay = (
-                    f"{rr['detection_delay_secs']}s"
-                    if rr["detected"] else "not detected"
-                )
-                thr = rr.get("threshold_round", float("nan"))
-                print(
-                    f"    Round {rr['round']}: "
-                    f"FA={rr['n_false_pos']}  "
-                    f"thr_round={thr:.1f}  "
-                    f"Delay={delay}"
-                )
-            print(f"    Plot → {plot_path}\n")
+            print(
+                f"    Node B (r={NODE_R_B}):   "
+                f"{_round_summary(res_b['round_results'])}"
+            )
+            print(
+                f"    NodeLearning:      "
+                f"{_round_summary(res_f['round_results'])}"
+                f"  [w_A={node_learning.w_a_:.3f} w_B={node_learning.w_b_:.3f}]"
+            )
+            print()
 
-    if not all_results:
-        print("No results — check that MIMII data is present and splits manifest exists.")
+    if not comparison:
+        print(
+            "No results — check that MIMII data is present and the splits "
+            "manifest exists for this dataset."
+        )
         return
 
-    # ── Overall summary (mirrors inference/run.py format) ─────────────────────
-    all_rounds   = [rr for res in all_results.values() for rr in res["rounds"]]
-    total_fp     = sum(rr["n_false_pos"]    for rr in all_rounds)
-    total_norm   = sum(rr["n_normal_clips"] for rr in all_rounds)
-    n_detected   = sum(1 for rr in all_rounds if rr["detected"])
-    total_rounds = len(all_rounds)
-    delays       = [rr["detection_delay_secs"] for rr in all_rounds if rr["detected"]]
-    mean_delay   = float(np.mean(delays))   if delays else float("nan")
-    median_delay = float(np.median(delays)) if delays else float("nan")
-    max_delay    = int(max(delays))         if delays else None
+    # ── Aggregate summary table ───────────────────────────────────────────────
+    def _agg(rows: list[dict]) -> dict:
+        det    = sum(r["det"]   for r in rows)
+        total  = sum(r["total"] for r in rows)
+        fp     = sum(r["n_fp"]  for r in rows)
+        norm   = sum(r["n_norm"] for r in rows)
+        delays = [d for r in rows for d in r["delays"]]
+        return {
+            "det_rate":   f"{det}/{total} ({100*det/total:.0f}%)" if total else "n/a",
+            "fa_pct":     f"{100*fp/norm:.1f}%"                   if norm  else "n/a",
+            "mean_delay": f"{np.mean(delays):.0f}s"               if delays else "n/a",
+        }
 
-    print(f"{'─' * 55}")
-    print(f"  Machines evaluated  : {len(all_results)}")
-    print(
-        f"  Total normal clips  : {total_norm}  |  "
-        f"False alarm events: {total_fp}"
-    )
-    print(
-        f"  Detection rate      : {n_detected}/{total_rounds} rounds "
-        f"({100 * n_detected / total_rounds:.0f}%)"
-    )
-    print(
-        f"  Mean detection delay: {mean_delay:.0f}s  "
-        f"(median {median_delay:.0f}s, max {max_delay}s)"
-    )
-    print(f"{'─' * 55}")
-    print(f"\nPlots   → {out_dir}/*.png")
-    print(f"Results → {out_dir}/results.yaml")
-    print("\nTo compare with SVDD pipeline:")
-    print("  python inference/run.py")
+    rows_a = [v["node_a"]        for v in comparison.values()]
+    rows_b = [v["node_b"]        for v in comparison.values()]
+    rows_f = [v["node_learning"] for v in comparison.values()]
 
-    # ── Write results YAML ────────────────────────────────────────────────────
-    results_path = out_dir / "results.yaml"
-    with open(results_path, "w") as f:
-        yaml.dump(all_results, f, default_flow_style=False, sort_keys=False)
+    agg_a = _agg(rows_a)
+    agg_b = _agg(rows_b)
+    agg_f = _agg(rows_f)
+
+    sep = "─" * 65
+    print(sep)
+    print(f"  {'Variant':<26}  {'Detection':<14}  {'FA%':<8}  Mean delay")
+    print(sep)
+    print(
+        f"  {'Node A (r='+str(NODE_R_A)+')':<26}  "
+        f"{agg_a['det_rate']:<14}  {agg_a['fa_pct']:<8}  {agg_a['mean_delay']}"
+    )
+    print(
+        f"  {'Node B (r='+str(NODE_R_B)+')':<26}  "
+        f"{agg_b['det_rate']:<14}  {agg_b['fa_pct']:<8}  {agg_b['mean_delay']}"
+    )
+    print(
+        f"  {'NodeLearning ('+str(NODE_R_A)+'/'+str(NODE_R_B)+')':<26}  "
+        f"{agg_f['det_rate']:<14}  {agg_f['fa_pct']:<8}  {agg_f['mean_delay']}"
+    )
+    print(sep)
+    print(f"\nPlots   → {out_root}/{{node_a,node_b,node_learning}}/*.png")
+    print(f"Results → {out_root}/comparison.yaml\n")
+
+    # ── Write YAMLs (overwrite on re-run) ─────────────────────────────────────
+    for path, data in [
+        (dir_node_a        / "results.yaml", results_node_a),
+        (dir_node_b        / "results.yaml", results_node_b),
+        (dir_node_learning / "results.yaml", results_node_learning),
+        (out_root          / "comparison.yaml", comparison),
+    ]:
+        with open(path, "w") as f:
+            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
 
 
 if __name__ == "__main__":

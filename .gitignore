@@ -21,12 +21,13 @@ tinyml_env/
 
 # Large datasets (downloaded separately)
 /data/fsd50k/
-/data/mimii/
+/data/mimii_neg6db/
+/data/mimii_0db/
+/data/mimii_6db/
 /data/archives/
 /data/tmp/
-/data/mimii2/
 
 # Output results
 simulation/outputs/
 simulation/data/
-
+gmm/outputs/

@@ -1,114 +1,140 @@
 """
-features.py — TWFR (Time-Weighted Frequency Domain Representation) feature extraction.
+features.py — Feature extraction for the deployment-faithful GMM simulation.
 
-Implements the GWRP-based audio representation from:
-  Guan et al., "Time-Weighted Frequency Domain Audio Representation with GMM
-  Estimator for Anomalous Sound Detection", arXiv:2305.03328 (2023).
+Two extraction paths:
 
-Key difference from the CNN pipeline in this repo: TWFR operates on the full
-10 s clip mel spectrogram in a single pass (≈625 time frames at hop=256),
-not on 0.975 s sub-windows. The time axis is therefore the entire recording,
-allowing the weighting to trade off stationary vs. transient content.
+  extract_feature(log_mel)        r=1.0 only — direct equivalent of
+                                  spectrogram_get_feature() in deployment/
+                                  spectrogram.h.  Used by the single-node
+                                  baseline and the hardware simulation.
 
-All audio constants (SAMPLE_RATE, N_FFT, HOP_LENGTH, N_MELS, LOG_OFFSET) are
-imported from config.py — the single source of truth shared across the repo.
+  extract_feature_r(log_mel, r)   General GWRP for any r ∈ [0, 1].  Used
+                                  by node learning experiments where each
+                                  node operates at a different r value.
+                                  At r=1.0 this is identical to the above.
+
+Both return an (N_MELS,) float32 vector.
+
+Hardware-induced node heterogeneity
+------------------------------------
+The choice of r creates the functional heterogeneity that motivates the
+Node Learning approach (Kanjo & Aslanov, 2026, §3):
+
+  r = 1.0  Mean pooling.  Computed as a running sum — no buffer needed.
+           The *only* r value feasible on the Arduino Nano 33 BLE (256 KB SRAM)
+           without storing the full (128 × 312) spectrogram (≈156 KB).
+
+  r = 0.5  Energy-weighted GWRP.  Requires sorting each mel bin across all
+           time frames, which demands the full spectrogram buffer.  Feasible
+           only on a *second* co-located node.
+
+Two nodes with r=1.0 and r=0.5 form a functionally complementary pair
+(paper §2): they perceive different temporal structure of the same audio and
+therefore carry different information about normality.  NodeLearning fuses
+their scores to exploit this diversity.
 """
 
 import sys
 from pathlib import Path
 
-import librosa
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import GMM_HOP_LENGTH, GMM_N_MELS, LOG_OFFSET, N_FFT, SAMPLE_RATE
-
 from preprocessing.gmm_input import load_full_clip_log_mel
 
 
-# Alias with shorter names for readability within this module.
-# GMM_N_MELS=128 and GMM_HOP_LENGTH=512 match the paper (Guan et al. 2023),
-# and differ deliberately from the SVDD pipeline (N_MELS=64, HOP_LENGTH=256).
-_N_MELS     = GMM_N_MELS       # 128 Mel-filter banks
-_HOP_LENGTH = GMM_HOP_LENGTH   # 50 % overlap of N_FFT=1024
-
-
-# ── Public API ────────────────────────────────────────────────────────────────
-
 def load_log_mel(wav_path: str) -> np.ndarray:
-    """Load a WAV file and compute its full-clip log-mel spectrogram."""
-    return load_full_clip_log_mel(wav_path)
-
-
-def gwrp_weights(N: int, r: float) -> np.ndarray:
-    """Compute the Global Weighted Ranking Pooling (GWRP) weight vector.
-
-    Weights are defined as::
-
-        P(r)[i] = r^i / z(r),   z(r) = sum(r^j for j in 0..N-1)
-
-    where index 0 receives the highest weight and corresponds to the
-    largest value after descending sort (energy-weighted attention).
-
-    Special cases (handled without numerical issues):
-    * r = 1.0  →  uniform weights  1/N  (mean pooling)
-    * r = 0.0  →  [1, 0, 0, ...]      (max pooling)
+    """Load a WAV file and return its full-clip log-mel spectrogram.
 
     Parameters
     ----------
-    N : int
-        Number of time frames (length of the weight vector).
+    wav_path : str
+
+    Returns
+    -------
+    log_mel : np.ndarray, shape (N_MELS, T)
+    """
+    return load_full_clip_log_mel(wav_path)
+
+
+def gwrp_weights(T: int, r: float) -> np.ndarray:
+    """Compute Global Weighted Ranking Pooling weights, shape (T,).
+
+    Weights are defined as:
+        P(r)[i] = r^i / Z(r),   Z(r) = sum(r^j for j in 0..T-1)
+
+    Index 0 receives the highest weight and corresponds to the largest
+    value after descending sort (energy-weighted attention).
+
+    Special cases handled without numerical issues:
+      r = 1.0  →  uniform weights  1/T  (mean pooling)
+      r = 0.0  →  [1, 0, 0, ...]       (max pooling)
+
+    Parameters
+    ----------
+    T : int
+        Number of time frames.
     r : float
         Decay parameter in [0, 1].
 
     Returns
     -------
-    weights : np.ndarray, shape (N,), dtype float64
+    weights : np.ndarray, shape (T,), dtype float64
         Non-negative weights summing to 1.0.
     """
-    if r == 1.0:
-        return np.ones(N) / N
-    if r == 0.0:
-        w = np.zeros(N)
+    if r >= 1.0:
+        return np.ones(T) / T
+    if r <= 0.0:
+        w = np.zeros(T)
         w[0] = 1.0
         return w
-    w = r ** np.arange(N)
+    w = r ** np.arange(T)
     return w / w.sum()
 
 
-def twfr_feature(log_mel: np.ndarray, r: float) -> np.ndarray:
-    """Compute the Time-Weighted Frequency Domain Representation (TWFR).
+def extract_feature_r(log_mel: np.ndarray, r: float) -> np.ndarray:
+    """Compute the TWFR feature for any r value.
 
-    For each mel-frequency bin (row of ``log_mel``), the T time-frame values
-    are sorted in descending order and then combined via a weighted dot product
-    with the GWRP weight vector P(r). This produces one scalar per frequency
-    bin, yielding an M-dimensional feature vector for the clip.
+    For each mel-frequency bin, the T time-frame values are sorted in
+    descending order and combined via the GWRP weight vector P(r).
 
-    The operation generalises mean (r=1) and max (r=0) pooling:
-    * r → 1 emphasises the stationary component (average energy).
-    * r → 0 emphasises the peak transient (maximum energy frame).
-    Intermediate r values blend both characteristics adaptively.
+    At r=1.0 this is mathematically identical to extract_feature() and to
+    spectrogram_get_feature() in deployment/spectrogram.h: sort is
+    order-invariant under uniform weights so no sort is needed.
 
     Parameters
     ----------
-    log_mel : np.ndarray, shape (M, T)
-        Log-mel spectrogram with M frequency bins and T time frames.
+    log_mel : np.ndarray, shape (N_MELS, T)
     r : float
         GWRP decay parameter in [0, 1].
 
     Returns
     -------
-    feature : np.ndarray, shape (M,), dtype float32
-        TWFR feature vector. Dimensionality equals N_MELS (64 by default).
-
-    Notes
-    -----
-    Invariants (verified in tests):
-      ``twfr_feature(lm, r=1.0)`` equals ``lm.mean(axis=1)``  (mean pooling)
-      ``twfr_feature(lm, r=0.0)`` equals ``lm.max(axis=1)``   (max pooling)
+    feature : np.ndarray, shape (N_MELS,), dtype float32
     """
+    if r >= 1.0:
+        return log_mel.mean(axis=1).astype(np.float32)
+    if r <= 0.0:
+        return log_mel.max(axis=1).astype(np.float32)
     _, T = log_mel.shape
-    # Sort each frequency bin's values in descending order of energy.
-    sorted_mel = np.sort(log_mel, axis=1)[:, ::-1]   # shape (M, T)
-    weights = gwrp_weights(T, r)                       # shape (T,)
-    return (sorted_mel @ weights).astype(np.float32)  # shape (M,)
+    weights    = gwrp_weights(T, r)                          # (T,)
+    sorted_mel = np.sort(log_mel, axis=1)[:, ::-1]          # (N_MELS, T) descending
+    return (sorted_mel @ weights).astype(np.float32)         # (N_MELS,)
+
+
+def extract_feature(log_mel: np.ndarray) -> np.ndarray:
+    """Compute the TWFR feature at r=1.0: mean over the time axis.
+
+    Equivalent to spectrogram_get_feature() in deployment/spectrogram.h.
+    Kept as the named entry point for the deployment-faithful single-node
+    baseline so call sites read clearly.
+
+    Parameters
+    ----------
+    log_mel : np.ndarray, shape (N_MELS, T)
+
+    Returns
+    -------
+    feature : np.ndarray, shape (N_MELS,), dtype float32
+    """
+    return extract_feature_r(log_mel, 1.0)

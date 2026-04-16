@@ -1,41 +1,27 @@
 """
-evaluate.py — Per-machine evaluation pipeline for GMMDetector on MIMII data.
+evaluate.py — Per-machine monitoring simulation for any detector variant.
 
-Structural port of inference/run.py::run_machine(), with the embed-and-score
-chain replaced by TWFR feature extraction + GMM NLL scoring. The timeline
-data structures (events, segments, round_results) are identical to those
-produced by inference/run.py, so plot.py and train.py can consume them
-without any adaptation.
-
-Timeline encoding note
-----------------------
-``t`` is tracked in **seconds** internally. Values written into ``events``
-and ``segments`` are stored as ``t / 60`` (minutes), matching the convention
-in inference/run.py (see line 139 of that file). plot.py recovers seconds for
-the x-axis via ``ts(e) = e["t"] * 60``. This keeps the two pipelines
-visually identical.
+Mirrors the COLLECT → TRAIN → MONITOR state machine in tinyml_gmm.ino.
+Accepts any detector that implements the GMMDetector duck-type interface:
+score(), cusum_update(), cusum_reset(), cusum_false_alarms(), threshold_,
+cusum_k_, cusum_h_, r_, n_components.  This means GMMDetector (single-node
+baseline) and NodeLearning (two-node collaborative system) are both supported
+without any changes to this module.
 
 Detection mechanism
 -------------------
-Individual per-clip NLL scores have high variance: an occasional quiet
-anomaly clip scores near-normal; an occasional loud normal clip spikes above
-the threshold. Evaluating clips one-at-a-time therefore produces both missed
-detections and false positives regardless of threshold placement.
+  Normal window:   cusum_false_alarms(scores) — counts independent CUSUM alarm
+                   events with accumulator reset after each (mirrors the C++).
+  Anomaly window:  cusum_update(score) per clip — first alarm = detection event.
 
-The solution is to make decisions on a **rolling window mean** of the last
-``ROLLING_WINDOW`` clips rather than on individual scores. A single outlier
-clip moves the window mean by at most 1/ROLLING_WINDOW of its excess —
-sustained shifts (true anomaly periods) move it fully.
-
-The detection threshold for each round is set **adaptively** from the normal
-monitoring window observed immediately before the anomaly window. The
-maximum rolling-mean seen during normal operation is recorded; the anomaly
-threshold is set 50 % above that level. This compensates for machine-to-
-machine and session-to-session variability in score magnitude that a static
-training-time threshold cannot capture.
-
-Dependencies: sys, numpy, tqdm, config, gmm.features, gmm.detector.
-No matplotlib, no yaml, no argparse.
+CUSUM accumulator resets
+------------------------
+  * Explicit reset before each monitoring window — matches tinyml_gmm.ino.
+  * Automatic reset inside cusum_update() on alarm — first alarm ends the
+    anomaly search for that round.
+  * Rolling mean (ROLLING_WINDOW=5 clips) stored in event dicts for
+    diagnostics/plotting only.  Does NOT affect detection, matching the C++
+    where rolling_mean() output goes to Serial only.
 """
 
 import sys
@@ -45,228 +31,115 @@ import numpy as np
 from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import CLIP_SECS, MIMII_ROOT
-from gmm.detector import GMMDetector
+from config import MIMII_ROOT as _DEFAULT_MIMII_ROOT
+from gmm.config import CLIP_SECS, ROLLING_WINDOW
 from gmm.features import load_log_mel
-
-# Number of consecutive clips whose mean score is used for detection decisions.
-# With CLIP_SECS=10, ROLLING_WINDOW=5 corresponds to a 50-second context.
-# A single outlier clip shifts the window mean by at most 1/5 of its excess;
-# three or more consecutive anomalous clips shift it fully above the threshold.
-ROLLING_WINDOW = 5
-
-# Safety margin applied to the max normal rolling mean when setting the
-# per-round adaptive detection threshold.  1.5 = 50 % headroom above the
-# worst rolling mean observed during the preceding normal window.
-ADAPTIVE_SAFETY = 1.5
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _rolling_mean(scores: list[float], i: int, window: int) -> float:
-    """Mean of the score sub-sequence ending at index ``i`` (left-padded).
-
-    At the start of a sequence (i < window - 1) the window is smaller than
-    ``window``, covering only the clips seen so far.  This avoids introducing
-    artificial zeros before the first full window is available.
-
-    Parameters
-    ----------
-    scores : list of float
-        Full score sequence.
-    i : int
-        Index of the rightmost (most recent) clip in the window.
-    window : int
-        Maximum window length.
-
-    Returns
-    -------
-    mean : float
-        Arithmetic mean of ``scores[max(0, i-window+1) : i+1]``.
-    """
-    return float(np.mean(scores[max(0, i - window + 1):i + 1]))
-
-
-def _count_alarm_events(
-    scores: list[float],
-    threshold: float,
-    window: int,
-) -> int:
-    """Count non-overlapping alarm events in a rolling-mean score sequence.
-
-    An alarm event begins when the rolling mean first rises above
-    ``threshold`` and ends when it falls back below it.  Each continuous
-    above-threshold excursion is counted as one event regardless of how many
-    clips it spans.
-
-    Parameters
-    ----------
-    scores : list of float
-        Per-clip anomaly scores for a monitoring window.
-    threshold : float
-        Alarm threshold applied to the rolling mean.
-    window : int
-        Rolling window size (same as used for detection).
-
-    Returns
-    -------
-    n_events : int
-        Number of distinct above-threshold excursions.
-    """
-    n_events  = 0
-    in_alarm  = False
-    for i in range(len(scores)):
-        rm = _rolling_mean(scores, i, window)
-        if rm >= threshold and not in_alarm:
-            n_events += 1
-            in_alarm  = True
-        elif rm < threshold:
-            in_alarm  = False
-    return n_events
-
-
-def _detect_first_alarm(
-    scores: list[float],
-    threshold: float,
-    window: int,
-) -> int | None:
-    """Return the index of the first clip at which the rolling mean alarm fires.
-
-    Parameters
-    ----------
-    scores : list of float
-        Per-clip anomaly scores for the anomaly monitoring window.
-    threshold : float
-        Alarm threshold applied to the rolling mean.
-    window : int
-        Rolling window size.
-
-    Returns
-    -------
-    detection_idx : int or None
-        Index of the triggering clip, or ``None`` if no alarm fires.
-    """
-    for i in range(len(scores)):
-        if _rolling_mean(scores, i, window) >= threshold:
-            return i
-    return None
-
-
-# ── Public API ────────────────────────────────────────────────────────────────
-
-def score_paths(
+def _score_paths(
     wav_paths: list[str],
-    detector: GMMDetector,
+    detector,
     desc: str = "",
 ) -> list[float]:
-    """Score a list of WAV files using a fitted GMMDetector.
+    """Score a list of WAV files, returning one NLL per clip.
 
-    Loads each clip's log-mel spectrogram on-the-fly and calls
-    ``detector.score()``. Files that raise ``RuntimeError`` during loading
-    (e.g. corrupt or zero-length WAVs) are silently skipped with a warning
-    printed to stderr so one bad file does not abort an entire round.
-
-    Parameters
-    ----------
-    wav_paths : list of str
-        Absolute paths to WAV files to score.
-    detector : GMMDetector
-        A fitted detector instance (``fit()`` must have been called).
-    desc : str, optional
-        Description label forwarded to the tqdm progress bar.
-
-    Returns
-    -------
-    scores : list of float
-        NLL anomaly scores, one per successfully processed clip. The list
-        may be shorter than ``wav_paths`` if files were skipped.
+    Files that raise RuntimeError during loading (e.g. corrupt or zero-length
+    WAVs) are skipped with a warning so one bad file does not abort a round.
     """
     scores: list[float] = []
     for path in tqdm(wav_paths, desc=desc, leave=False, unit="clip"):
         try:
-            log_mel = load_log_mel(path)
-            scores.append(detector.score(log_mel))
+            scores.append(detector.score(load_log_mel(path)))
         except RuntimeError as exc:
             print(f"  Warning: {exc}", file=sys.stderr)
     return scores
 
 
+def _rolling_mean(scores: list[float], i: int) -> float:
+    """Mean of scores[max(0, i-ROLLING_WINDOW+1) : i+1].
+
+    Display / diagnostics only — does not affect detection.
+    Matches rolling_mean() in tinyml_gmm.ino.
+    """
+    return float(np.mean(scores[max(0, i - ROLLING_WINDOW + 1):i + 1]))
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
+
 def evaluate_machine(
     mtype: str,
     mid: str,
-    detector: GMMDetector,
+    detector,
     splits: dict,
+    mimii_root=None,
 ) -> dict | None:
-    """Run the monitoring simulation for one machine using a fitted GMMDetector.
+    """Run the monitoring simulation for one machine.
 
-    Mirrors the timeline structure of ``inference/run.py::run_machine()``
-    exactly: same event/segment dicts, same round_results schema, same
-    time encoding (minutes stored, seconds plotted). This allows plot.py
-    to be reused without modification.
+    Mirrors the per-round MONITOR loop in tinyml_gmm.ino:
 
-    Each monitoring round consists of:
-    1. A **normal** window: ``monitor_clips`` normal test clips are scored.
-       The rolling-mean alarm count is recorded as false positives.
-    2. An **anomaly** window: ``monitor_clips`` abnormal clips are scored.
-       The first clip at which the rolling mean exceeds the round threshold
-       is the detection event.
-
-    The per-round detection threshold is derived adaptively from the
-    preceding normal window: the maximum rolling mean observed during normal
-    operation, multiplied by ``ADAPTIVE_SAFETY``.  This allows the threshold
-    to self-calibrate to each machine's actual score magnitude at test time,
-    compensating for cases where the training-time threshold under- or
-    over-estimates the normal score level.
+    For each round:
+      1. Normal window  — score clips, count CUSUM alarms as false positives.
+         The accumulator is reset before the window (fresh start each round).
+      2. Anomaly window — score clips, record the first CUSUM alarm index as
+         the detection event.  Accumulator reset before this window too.
 
     Parameters
     ----------
     mtype : str
-        Machine type string, e.g. ``'fan'``.
+        Machine type, e.g. 'fan'.
     mid : str
-        Machine ID string, e.g. ``'id_00'``.
-    detector : GMMDetector
-        Fitted detector (``threshold_`` and ``r_`` must be set).
+        Machine ID, e.g. 'id_00'.
+    detector : GMMDetector or NodeLearning
+        Fitted detector (fit() must have been called).  Any object implementing
+        the duck-type interface: score(), cusum_update(), cusum_reset(),
+        cusum_false_alarms(), threshold_, cusum_k_, cusum_h_, r_, n_components.
     splits : dict
-        Full splits manifest as loaded from ``splits.json``.
+        Splits manifest loaded from the appropriate splits_{dataset}.json.
+    mimii_root : Path, optional
+        Root directory of the MIMII dataset.  Defaults to MIMII_ROOT from
+        the root config (backwards-compatible alias for the -6dB dataset).
 
     Returns
     -------
     result : dict or None
-        Dictionary with keys:
-          * ``events``       – list of {t, score, phase, round} dicts
-          * ``segments``     – list of {phase, round, t_start, t_end} dicts
-          * ``threshold``    – float training detection threshold (for plot line)
-          * ``round_results``– list of per-round metric dicts
-          * ``n_rounds``     – int
-          * ``r``            – float GWRP decay used by detector
-          * ``n_components`` – int GMM components
-        Returns ``None`` if the machine key is absent from ``splits``.
+        Keys: events, segments, threshold, round_results, n_rounds,
+              r, n_components.
+        Returns None if the machine key is absent from splits.
     """
+    if mimii_root is None:
+        mimii_root = _DEFAULT_MIMII_ROOT
+
     key = f"{mtype}/{mid}"
     if key not in splits:
         return None
 
-    test_normal_paths   = [str(MIMII_ROOT / p) for p in splits[key]["test_normal"]]
-    test_abnormal_paths = [str(MIMII_ROOT / p) for p in splits[key]["test_abnormal"]]
+    test_normal_paths   = [str(mimii_root / p) for p in splits[key]["test_normal"]]
+    test_abnormal_paths = [str(mimii_root / p) for p in splits[key]["test_abnormal"]]
     n_rounds            = splits[key]["n_rounds"]
     monitor_clips       = len(test_normal_paths) // n_rounds
 
-    # ── Timeline state ────────────────────────────────────────────────────────
-    events:   list[dict] = []   # one entry per scored clip
-    segments: list[dict] = []   # one entry per monitoring window
-    t = 0.0                     # running wall-clock time in seconds
+    # Timeline state — t in seconds internally, stored as t/60 (minutes) in
+    # events/segments to match the convention in inference/run.py.
+    events:   list[dict] = []
+    segments: list[dict] = []
+    t = 0.0
 
-    def add_segment(phase: str, round_idx: int, wav_paths: list[str]) -> list[float]:
-        """Score all clips in one monitoring window, advancing the timeline."""
+    def _add_segment(phase: str, round_idx: int, wav_paths: list[str]) -> list[float]:
+        """Score all clips in one window, advancing the timeline."""
         nonlocal t
         seg_start = t
-        scores = score_paths(
-            wav_paths,
-            detector,
-            desc=f"    {phase[:4]} r{round_idx}",
-        )
-        for score in scores:
-            events.append({"t": t / 60, "score": score, "phase": phase, "round": round_idx})
+        scores = _score_paths(wav_paths, detector,
+                               desc=f"    {phase[:4]} r{round_idx}")
+        for i, score in enumerate(scores):
+            events.append({
+                "t":            t / 60,
+                "score":        score,
+                "rolling_mean": _rolling_mean(scores, i),
+                "phase":        phase,
+                "round":        round_idx,
+            })
             t += CLIP_SECS
         segments.append({
             "phase":   phase,
@@ -276,43 +149,28 @@ def evaluate_machine(
         })
         return scores
 
-    # ── Monitoring rounds ─────────────────────────────────────────────────────
     round_results: list[dict] = []
 
     for r in range(n_rounds):
         norm_paths = test_normal_paths[r * monitor_clips:(r + 1) * monitor_clips]
         anom_paths = test_abnormal_paths[r * monitor_clips:(r + 1) * monitor_clips]
 
-        norm_scores = add_segment("normal",  r + 1, norm_paths)
-        anom_scores = add_segment("anomaly", r + 1, anom_paths)
+        # Normal window: count false positive alarm events.
+        # cusum_false_alarms() resets the accumulator internally and resets
+        # after each alarm, counting independent excursion events.
+        norm_scores = _add_segment("normal",  r + 1, norm_paths)
+        n_false_pos = detector.cusum_false_alarms(norm_scores)
 
-        # ── Per-round adaptive threshold ──────────────────────────────────────
-        # We always observe a normal window before the anomaly window. The
-        # rolling means of that window tell us exactly how the detector behaves
-        # under current normal conditions for this round and machine. We use the
-        # worst (maximum) rolling mean seen and add a 50 % safety margin.
-        #
-        # Effect per failure mode observed in the plots:
-        #   • Quiet normal, massive anomaly (slider_id_04, fan_id_02):
-        #       max_norm_rolling ≈ 0 → threshold_round = training threshold
-        #       → first anomaly clip triggers detection immediately.
-        #   • Variable normal (fan_id_04 — training threshold too low):
-        #       max_norm_rolling is large → threshold_round rises above the
-        #       normal spikes → anomaly window requires sustained elevation
-        #       to trigger → false positives suppressed.
-        #   • Mixed anomaly period (pump_id_04, slider_id_02):
-        #       High anomaly clips pull rolling mean above threshold even if
-        #       some anomaly clips score near-normal. The window smooths the
-        #       mixture rather than missing low-scoring individual clips.
-        norm_rolling_means  = [_rolling_mean(norm_scores, i, ROLLING_WINDOW)
-                               for i in range(len(norm_scores))]
-        max_norm_rolling    = max(norm_rolling_means, default=0.0)
-        threshold_round     = max(max_norm_rolling * ADAPTIVE_SAFETY, detector.threshold_)
-
-        # False positives: alarm events in normal window using the SAME
-        # threshold_round so the metric is consistent with the detection logic.
-        n_false_pos   = _count_alarm_events(norm_scores, threshold_round, ROLLING_WINDOW)
-        detection_idx = _detect_first_alarm(anom_scores, threshold_round, ROLLING_WINDOW)
+        # Anomaly window: find first detection alarm.
+        # Reset accumulator before the window for a fresh start.
+        detector.cusum_reset()
+        anom_scores   = _add_segment("anomaly", r + 1, anom_paths)
+        detection_idx = None
+        detector.cusum_reset()
+        for idx, s in enumerate(anom_scores):
+            if detector.cusum_update(s):
+                detection_idx = idx
+                break
 
         round_results.append({
             "round":                r + 1,
@@ -320,9 +178,11 @@ def evaluate_machine(
             "n_normal_clips":       len(norm_scores),
             "n_anom_clips":         len(anom_scores),
             "detected":             detection_idx is not None,
-            "detection_delay_secs": int(detection_idx * CLIP_SECS) if detection_idx is not None else None,
+            "detection_delay_secs": (int(detection_idx * CLIP_SECS)
+                                     if detection_idx is not None else None),
             "detection_idx":        detection_idx,
-            "threshold_round":      threshold_round,   # adaptive threshold used this round
+            "cusum_h":              detector.cusum_h_,
+            "cusum_k":              detector.cusum_k_,
         })
 
     return {
