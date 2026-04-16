@@ -7,6 +7,7 @@ __pycache__/
 # Virtual environment
 proj_env/
 group_env/
+tinyml_env/
 
 # Claude
 .claude/
@@ -23,6 +24,7 @@ group_env/
 /data/mimii/
 /data/archives/
 /data/tmp/
+/data/mimii2/
 
 # Output results
 simulation/outputs/
