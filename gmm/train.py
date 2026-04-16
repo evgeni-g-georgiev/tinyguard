@@ -80,7 +80,10 @@ from config import (
     MIMII_0DB_SPLITS,
     MIMII_NEG6DB_SPLITS,
 )
-from gmm.config import N_FIT_CLIPS, N_MELS, N_TRAIN_CLIPS, N_VAL_CLIPS, NODE_R_A, NODE_R_B
+from gmm.config import (
+    N_FIT_CLIPS, N_MELS, N_TRAIN_CLIPS, N_VAL_CLIPS,
+    NODE_R_A, NODE_R_B, R_CANDIDATES,
+)
 from gmm.detector import GMMDetector
 from gmm.evaluate import evaluate_machine
 from gmm.features import load_log_mel
@@ -129,8 +132,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--n-mels", type=int, default=N_MELS, metavar="N",
         help=(
             f"Number of mel frequency bins (default: {N_MELS}). "
-            "Use 64 to evaluate the reduced-resolution Chip B deployment path. "
             "When not the default, outputs go to <dataset>_<N>mel/ automatically."
+        ),
+    )
+    parser.add_argument(
+        "--r-search", action="store_true",
+        help=(
+            f"Enable per-node r-search over R_CANDIDATES={R_CANDIDATES}. "
+            "Each node independently selects the r that minimises its mean "
+            "validation NLL, mirroring the r-search in deployment/tinyml_gmm.ino. "
+            "Without this flag, Node A uses r=NODE_R_A and Node B uses r=NODE_R_B. "
+            "Outputs go to <dataset>_rsearch/ automatically."
         ),
     )
     parser.add_argument(
@@ -151,6 +163,40 @@ def _load_clips(paths: list[str], desc: str, n_mels: int = N_MELS) -> list:
         except RuntimeError as exc:
             print(f"    Warning: {exc}", file=sys.stderr)
     return log_mels
+
+
+def _fit_node(
+    fit_log_mels: list,
+    val_log_mels: list,
+    r_candidates: list[float],
+    n_mels: int,
+) -> GMMDetector:
+    """Fit a GMMDetector, selecting the best r from r_candidates.
+
+    Single candidate → straightforward fixed-r fit (standard run).
+    Multiple candidates → fit one detector per r, return the one with the
+    lowest mean validation NLL (best fit quality).  This mirrors the
+    r-search loop in deployment/tinyml_gmm.ino exactly: for each r,
+    fit the GMM, score the val clips, keep the best.
+
+    Parameters
+    ----------
+    fit_log_mels : list of np.ndarray, shape (n_mels, T)
+    val_log_mels : list of np.ndarray, shape (n_mels, T)
+    r_candidates : list of float   — GWRP decay values to evaluate
+    n_mels : int                   — must match the loaded spectrograms
+
+    Returns
+    -------
+    GMMDetector — fitted and calibrated, with the best r selected.
+    """
+    best: GMMDetector | None = None
+    for r in r_candidates:
+        det = GMMDetector(r=r, n_mels=n_mels)
+        det.fit(fit_log_mels, val_log_mels)
+        if best is None or det.mu_val_ < best.mu_val_:
+            best = det
+    return best
 
 
 def _round_summary(round_results: list[dict]) -> str:
@@ -203,11 +249,17 @@ def main() -> None:
     splits_path = Path(args.splits)  if args.splits  else splits_default
     out_root    = Path(args.out_dir) if args.out_dir else out_default
 
-    # When --n-mels differs from the default, write results to a separate dir
-    # so 128-mel and 64-mel outputs never overwrite each other.
-    # Explicit --out-dir always takes precedence over this auto-suffix.
-    if args.n_mels != N_MELS and not args.out_dir:
-        out_root = out_root.parent / f"{out_root.name}_{args.n_mels}mel"
+    # Auto-suffix output dir so different configurations never overwrite each
+    # other.  Explicit --out-dir always takes precedence over both suffixes.
+    if not args.out_dir:
+        if args.n_mels != N_MELS:
+            out_root = out_root.parent / f"{out_root.name}_{args.n_mels}mel"
+        if args.r_search:
+            out_root = out_root.parent / f"{out_root.name}_rsearch"
+
+    # Per-node r candidate lists — single-element list = fixed-r run.
+    r_cands_a = R_CANDIDATES if args.r_search else [NODE_R_A]
+    r_cands_b = R_CANDIDATES if args.r_search else [NODE_R_B]
 
     if not splits_path.exists():
         print(f"ERROR: Splits manifest not found at {splits_path}")
@@ -227,12 +279,18 @@ def main() -> None:
     with open(splits_path) as f:
         splits = json.load(f)
 
+    if args.r_search:
+        node_a_desc = f"r-search over {r_cands_a}"
+        node_b_desc = f"r-search over {r_cands_b}"
+    else:
+        node_a_desc = f"r={NODE_R_A} (fixed)"
+        node_b_desc = f"r={NODE_R_B} (fixed)"
+
     print(
         f"TWFR-GMM Node Learning comparison  [{args.dataset}]\n"
-        f"  Node A: r={NODE_R_A} (mean pooling, hardware baseline)\n"
-        f"  Node B: r={NODE_R_B} (energy-weighted GWRP)\n"
-        f"  n_mels={args.n_mels}  fit clips={N_FIT_CLIPS}  val clips={N_VAL_CLIPS}  "
-        f"(mirrors deployment/config.h)\n"
+        f"  Node A: {node_a_desc}\n"
+        f"  Node B: {node_b_desc}\n"
+        f"  n_mels={args.n_mels}  fit clips={N_FIT_CLIPS}  val clips={N_VAL_CLIPS}\n"
         f"  outputs → {out_root}\n"
     )
 
@@ -275,16 +333,15 @@ def main() -> None:
                 print(f"    No valid val clips — skipping.\n")
                 continue
 
-            # ── Step 1: Fit Node A (single-node, r=NODE_R_A) ─────────────────
-            # Local adaptation: θ_A = U_A(D_fit, c_A=r=1.0)  (paper eq. 1-2)
-            det_a = GMMDetector(r=NODE_R_A, n_mels=args.n_mels)
-            det_a.fit(fit_log_mels, val_log_mels)
+            # ── Step 1: Fit Node A ────────────────────────────────────────────
+            # Fixed r: single-element r_cands_a → standard fit.
+            # r-search: selects best r from R_CANDIDATES by min val NLL,
+            # mirroring the r-search loop in deployment/tinyml_gmm.ino.
+            det_a = _fit_node(fit_log_mels, val_log_mels, r_cands_a, args.n_mels)
             det_a.save(dir_node_a / f"{mtype}_{mid}.pkl")
 
-            # ── Step 2: Fit Node B (single-node, r=NODE_R_B) ─────────────────
-            # Local adaptation: θ_B = U_B(D_fit, c_B=r=0.0)  (paper eq. 1-2)
-            det_b = GMMDetector(r=NODE_R_B, n_mels=args.n_mels)
-            det_b.fit(fit_log_mels, val_log_mels)
+            # ── Step 2: Fit Node B ────────────────────────────────────────────
+            det_b = _fit_node(fit_log_mels, val_log_mels, r_cands_b, args.n_mels)
             det_b.save(dir_node_b / f"{mtype}_{mid}.pkl")
 
             # ── Step 3: Build NodeLearning (pairwise collaborative inference) ─
@@ -295,13 +352,13 @@ def main() -> None:
 
             if args.verbose:
                 print(
-                    f"    Node A (r={NODE_R_A}): "
+                    f"    Node A (r={det_a.r_}): "
                     f"thr={det_a.threshold_:.4f}  "
                     f"cusum_h={det_a.cusum_h_:.4f}  "
                     f"μ_val={det_a.mu_val_:.4f}"
                 )
                 print(
-                    f"    Node B (r={NODE_R_B}): "
+                    f"    Node B (r={det_b.r_}): "
                     f"thr={det_b.threshold_:.4f}  "
                     f"cusum_h={det_b.cusum_h_:.4f}  "
                     f"μ_val={det_b.mu_val_:.4f}"
@@ -323,9 +380,9 @@ def main() -> None:
                 continue
 
             # ── Step 5: Inject plot metadata and save timeline PNGs ──────────
-            _augment_result(res_a, f"r={NODE_R_A} mean pooling", "Anomaly score  (NLL)")
-            _augment_result(res_b, f"r={NODE_R_B} GWRP",         "Anomaly score  (NLL)")
-            _augment_result(res_f, f"r={NODE_R_A}/{NODE_R_B} node learning",
+            _augment_result(res_a, f"r={det_a.r_}", "Anomaly score  (NLL)")
+            _augment_result(res_b, f"r={det_b.r_}", "Anomaly score  (NLL)")
+            _augment_result(res_f, f"r={det_a.r_}/{det_b.r_} node learning",
                             "Anomaly score  (fused z-score)")
 
             plot_machine(res_a, mtype, mid, dir_node_a)
@@ -343,7 +400,7 @@ def main() -> None:
 
             comparison[key] = {
                 "node_a": {
-                    "r":      NODE_R_A,
+                    "r":      det_a.r_,
                     "det":    row_a["detected"],
                     "total":  row_a["total"],
                     "n_fp":   row_a["n_fp"],
@@ -351,7 +408,7 @@ def main() -> None:
                     "delays": row_a["delays"],
                 },
                 "node_b": {
-                    "r":      NODE_R_B,
+                    "r":      det_b.r_,
                     "det":    row_b["detected"],
                     "total":  row_b["total"],
                     "n_fp":   row_b["n_fp"],
@@ -359,7 +416,7 @@ def main() -> None:
                     "delays": row_b["delays"],
                 },
                 "node_learning": {
-                    "r":      f"{NODE_R_A}/{NODE_R_B}",
+                    "r":      f"{det_a.r_}/{det_b.r_}",
                     "w_a":    round(node_learning.w_a_, 4),
                     "w_b":    round(node_learning.w_b_, 4),
                     "det":    row_f["detected"],
@@ -371,11 +428,11 @@ def main() -> None:
             }
 
             print(
-                f"    Node A (r={NODE_R_A}):   "
+                f"    Node A (r={det_a.r_}):   "
                 f"{_round_summary(res_a['round_results'])}"
             )
             print(
-                f"    Node B (r={NODE_R_B}):   "
+                f"    Node B (r={det_b.r_}):   "
                 f"{_round_summary(res_b['round_results'])}"
             )
             print(
@@ -413,20 +470,29 @@ def main() -> None:
     agg_b = _agg(rows_b)
     agg_f = _agg(rows_f)
 
+    def _r_label(rows: list[dict]) -> str:
+        """Return the r value if all machines selected the same r, else 'search'."""
+        unique = {str(row["r"]) for row in rows}
+        return next(iter(unique)) if len(unique) == 1 else "search"
+
+    lbl_a = _r_label(rows_a)
+    lbl_b = _r_label(rows_b)
+    lbl_f = _r_label(rows_f)
+
     sep = "─" * 65
     print(sep)
     print(f"  {'Variant':<26}  {'Detection':<14}  {'FA%':<8}  Mean delay")
     print(sep)
     print(
-        f"  {'Node A (r='+str(NODE_R_A)+')':<26}  "
+        f"  {f'Node A (r={lbl_a})':<26}  "
         f"{agg_a['det_rate']:<14}  {agg_a['fa_pct']:<8}  {agg_a['mean_delay']}"
     )
     print(
-        f"  {'Node B (r='+str(NODE_R_B)+')':<26}  "
+        f"  {f'Node B (r={lbl_b})':<26}  "
         f"{agg_b['det_rate']:<14}  {agg_b['fa_pct']:<8}  {agg_b['mean_delay']}"
     )
     print(
-        f"  {'NodeLearning ('+str(NODE_R_A)+'/'+str(NODE_R_B)+')':<26}  "
+        f"  {f'NodeLearning ({lbl_f})':<26}  "
         f"{agg_f['det_rate']:<14}  {agg_f['fa_pct']:<8}  {agg_f['mean_delay']}"
     )
     print(sep)

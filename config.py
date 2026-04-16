@@ -49,7 +49,7 @@ GMM_NEG6DB_DIR = ROOT / "gmm/outputs/neg6db"
 GMM_0DB_DIR    = ROOT / "gmm/outputs/0db"
 GMM_6DB_DIR    = ROOT / "gmm/outputs/6db"
 GMM_DIR        = GMM_NEG6DB_DIR   # backwards-compat alias
-GMM_N_MELS     = 128   # paper (Guan et al. 2023) uses 128 Mel-filter banks
+GMM_N_MELS     = 64    # 64 bins: better-regularised GMM at N=50 clips; full deployment path
 GMM_HOP_LENGTH = 512   # 50 % overlap of N_FFT=1024, per paper implementation
 
 # ── Audio constants ───────────────────────────────────────────────────────────
