@@ -88,8 +88,8 @@ simulation:
   block_interval: 4
   extract_mode:   precompute     # precompute | online                                
   seed:           42   
-  state_enabled:  false                    # print block-level state metrics + render grid_state.png                                                                        
-  manual_reset:   false                    # circuit-breaker mode: hold alarm until engineer reset                                                                        
+  state_enabled:  true                    # print block-level state metrics + render grid_state.png                                                                        
+  manual_reset:   true                    # circuit-breaker mode: hold alarm until engineer reset                                                                        
                                                                             
   
 # ── Federation ───────────────────────────────────────────────────────────────       
@@ -108,7 +108,7 @@ federation:
 # at plot time (does NOT capture them during the simulation), so memory           
 # accounting stays honest. Slow — adds ~1-2 min per run with 16 nodes.            
 latent_plot:                                                                      
-  enabled:      false                                                              
+  enabled:      true                                                              
   perplexity:   30        # t-SNE perplexity (5-50, default 30)                   
   random_state: 42        # for reproducibility                                   
   per_frame:    true      # render per-frame t-SNE panel                          

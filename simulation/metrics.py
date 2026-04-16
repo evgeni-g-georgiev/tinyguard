@@ -133,6 +133,7 @@ def node_metrics(node: Node) -> NodeMetrics | None:
     return NodeMetrics(auc=auc, precision=precision, recall=recall, f1=f1,                            
                         tp=tp, tn=tn, fp=fp, fn=fn)  
 
+
 def block_state_metrics(node: Node, manual_reset: bool) -> BlockStateMetrics | None:
     """Compute block-level metrics from node.state_predictions + node.labels."""
     state, labels = node.state_predictions, node.labels                                               
