@@ -44,6 +44,33 @@ class NodeMetrics:
     f1:        float
     tp: int; tn: int; fp: int; fn: int
 
+                                                              
+@dataclass(frozen=True)                                                                
+class BlockStateMetrics:                                                                         
+    """Block-level metrics computed from a node's state_predictions.
+
+    Fires-at-all-inside-block semantics:
+    - block_tp: anomaly block where state was 1 at any point inside                            
+    - block_fn: anomaly block where state stayed 0 throughout (missed)                         
+    - block_fp: normal region where state was 1 at any point                                   
+    - block_tn: normal region where state stayed 0 throughout                                  
+                                                                                                
+    mean_lag:    average clips-from-block-start to first fire, over detected blocks.             
+    mean_unflag: average clips-from-block-end to first un-fire, over detected blocks.            
+                None in manual_reset mode (the engineer resets, not the tracker).               
+    """                                                                                          
+    block_tp: int                                                                                
+    block_fp: int                                                                                
+    block_fn: int
+    block_tn: int
+    block_precision: float                                                                       
+    block_recall:    float
+    block_f1:        float                                                                       
+    mean_lag:    float | None
+    mean_unflag: float | None
+    missed_blocks:  int
+    total_blocks:   int 
+
                                                                                     
 # ── Component construction ───────────────────────────────────────────────────       
                                                                                     
@@ -162,7 +189,13 @@ def _build_nodes(
                                                                                     
     # Auto-wire input_dim from the embedder's latent dimension
     if hasattr(frozen_embedder, "embedding_dim"):                                     
-        separator_kwargs["input_dim"] = frozen_embedder.embedding_dim                 
+        separator_kwargs["input_dim"] = frozen_embedder.embedding_dim    
+
+    # ── Manual-reset mode is a run-wide flag ────────────────────────────────────────────────────────             
+    # Every node sees the same value, read once here and passed into 
+    # each Node constructor. Default False so existing config without
+    # this key keep working. See Node._compute_state for the semantics.
+    manual_reset = config.get("simulation", {}).get("manual_reset", False)
 
     nodes_by_type: dict[str, list[Node]] = {}                                         
                 
@@ -179,6 +212,7 @@ def _build_nodes(
                 separator=separator,
                 topology=topology,                                                    
                 merge=merge,
+                manual_reset=manual_reset
             ))
         nodes_by_type[machine_type] = nodes
                                                                                     
@@ -236,6 +270,91 @@ def _format_step(result: TimestepResult, machine_types: list[str]) -> str:
 
                 
 # ── Results ──────────────────────────────────────────────────────────────────
+def _contiguous_runs(values: list[int], target: int) -> list[tuple[int, int]]:
+    """Return [(start, end_inclusive), ...] for each contiguous run of 'target'.
+    
+    Example: 
+        _contiguous_runs([0, 1, 1, 0, 1, 0], target=1)
+        -> [(1, 2), (4, 4)]
+    """
+    runs: list[tuple[int, int]] = [] 
+    start: int | None = None 
+    for i, v in enumerate(values):
+        if v == target and start is None: 
+            start = i 
+        elif v != target and start is not None: 
+            runs.append((start, i - 1))
+            start = None 
+    if start is not None: 
+        runs.append((start, len(values) - 1))
+    return runs 
+
+
+def _anomaly_block_outcomes(
+    anomaly_blocks: list[tuple[int, int]],
+    state: list[int],
+    manual_reset: bool,
+) -> tuple[int, int, list[int], list[int]]:
+    """Returns (block_tp, block_fn, lags, unflags) over all anomaly blocks."""
+    block_tp, block_fn, lags, unflags = 0, 0, [], []
+    for start, end in anomaly_blocks:
+        first_fire = next((i for i in range(start, end + 1) if state[i] == 1), None)
+        if first_fire is None:
+            block_fn += 1
+            continue
+        block_tp += 1
+        lags.append(first_fire - start)
+        if not manual_reset and end + 1 < len(state):
+            unflag = next((j - (end + 1) for j in range(end + 1, len(state)) if state[j] == 0), None)
+            if unflag is not None:
+                unflags.append(unflag)
+    return block_tp, block_fn, lags, unflags
+
+
+def _normal_region_outcomes(
+    normal_regions: list[tuple[int, int]],
+    state: list[int],
+) -> tuple[int, int]:
+    """Returns (block_fp, block_tn) over all normal regions."""
+    fired = [any(state[i] == 1 for i in range(start, end + 1)) for start, end in normal_regions]
+    return sum(fired), sum(not f for f in fired)
+
+
+def _prf(tp: int, fp: int, fn: int) -> tuple[float, float, float]:
+    """Returns (precision, recall, f1)."""
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1        = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+    return precision, recall, f1
+
+
+def _block_state_metrics(node: Node, manual_reset: bool) -> BlockStateMetrics | None:
+    """Compute block-level metrics from node.state_predictions + node.labels."""
+    state, labels = node.state_predictions, node.labels
+    if not state or all(s is None for s in state):
+        return None
+
+    anomaly_blocks = _contiguous_runs(labels, target=1)
+    if not anomaly_blocks:
+        return None
+    normal_regions = _contiguous_runs(labels, target=0)
+
+    block_tp, block_fn, lags, unflags = _anomaly_block_outcomes(anomaly_blocks, state, manual_reset)
+    block_fp, block_tn                = _normal_region_outcomes(normal_regions, state)
+    precision, recall, f1             = _prf(block_tp, block_fp, block_fn)
+
+    return BlockStateMetrics(
+        block_tp=block_tp, block_fp=block_fp,
+        block_fn=block_fn, block_tn=block_tn,
+        block_precision=precision, block_recall=recall, block_f1=f1,
+        mean_lag=float(np.mean(lags))    if lags    else None,
+        mean_unflag=float(np.mean(unflags)) if unflags else None,
+        missed_blocks=block_fn,
+        total_blocks=block_tp + block_fn,
+    )
+
+
+
 
 def _node_metrics(node: Node) -> NodeMetrics | None:
     """Return metrics for a node, or None if single-class."""
@@ -270,13 +389,75 @@ def _format_mean_row(label: str, metrics: list[NodeMetrics]) -> str:
             f"F1={np.mean([m.f1         for m in metrics]):.3f}")
 
 
-def _print_results(nodes_by_type: dict[str, list[Node]]) -> None:
+def _format_state_row(                                                           
+    node_id: str,
+    m: BlockStateMetrics,
+    manual_reset: bool,
+) -> str:
+    """Format the second per-node line showing block-level state metrics.
+
+    Indented under the clip row so 'state' aligns with the AUC column above.
+    """
+    mode_tag = "mr" if manual_reset else "auto"
+    indent = " " * (4 + len(node_id))
+
+    lag_str = (
+        f"Lag={m.mean_lag:4.1f}"
+        if m.mean_lag is not None else "Lag= N/A"
+    )
+    unflag_str = (
+        f"Unflag={m.mean_unflag:4.1f}"
+        if (not manual_reset and m.mean_unflag is not None)
+        else "Unflag=   —"
+    )
+
+    return (
+        f"{indent}state ({mode_tag})  "
+        f"|  bTP={m.block_tp:3d} bTN={m.block_tn:3d} bFP={m.block_fp:3d} bFN={m.block_fn:3d}  "
+        f"|  bP={m.block_precision:.3f} bR={m.block_recall:.3f} bF1={m.block_f1:.3f}  "
+        f"|  {lag_str}  {unflag_str}  Miss={m.missed_blocks:2d}/{m.total_blocks:2d}"
+    )
+
+
+def _format_state_mean_row(                                                      
+    label: str,
+    metrics: list[BlockStateMetrics],
+    manual_reset: bool,
+) -> str:
+    """Format the per-type / overall state mean row."""
+    lags = [m.mean_lag for m in metrics if m.mean_lag is not None]
+    unflags = [m.mean_unflag for m in metrics if m.mean_unflag is not None]
+
+    lag_str = (
+        f"Lag={np.mean(lags):4.1f}" if lags else "Lag= N/A"
+    )
+    unflag_str = (
+        f"Unflag={np.mean(unflags):4.1f}"
+        if (not manual_reset and unflags)
+        else "Unflag=   —"
+    )
+    total_missed = sum(m.missed_blocks for m in metrics)
+    total_blocks = sum(m.total_blocks for m in metrics)
+
+    return (
+        f"  {label:12s} state mean  "
+        f"|  bP={np.mean([m.block_precision for m in metrics]):.3f}  "
+        f"bR={np.mean([m.block_recall for m in metrics]):.3f}  "
+        f"bF1={np.mean([m.block_f1 for m in metrics]):.3f}  "
+        f"|  {lag_str}  {unflag_str}  Miss={total_missed:3d}/{total_blocks:3d}"
+    )
+
+
+
+def _print_results(nodes_by_type: dict[str, list[Node]], state_enabled: bool = False, manual_reset: bool = False) -> None:
     """Compute and print AUC per node and per machine type."""
     print("\n" + "=" * 60)
     print("Results")
     print("=" * 60)
 
     type_metrics: dict[str, list[NodeMetrics]] = defaultdict(list)
+    type_state_metrics: dict[str, list[BlockStateMetrics]] = defaultdict(list)
+
 
     for machine_type, nodes in nodes_by_type.items():
         for node in nodes:
@@ -287,13 +468,34 @@ def _print_results(nodes_by_type: dict[str, list[Node]]) -> None:
             type_metrics[machine_type].append(m)
             print(_format_node_row(node.node_id, m))
 
+            # ── Optional second row for state metrics  ────────────────────────────────────────────────────────
+            if state_enabled:
+                sm = _block_state_metrics(node, manual_reset)
+                if sm is not None: 
+                    type_state_metrics[machine_type].append(sm)
+                    print(_format_state_row(node.node_id, sm, manual_reset))
+
     print("-" * 60)
     for machine_type, metrics in type_metrics.items():
         print(_format_mean_row(machine_type, metrics))
+        # ── Optional per-type state mean row ──                                  
+        if state_enabled and type_state_metrics.get(machine_type):
+            print(_format_state_mean_row(
+                machine_type, type_state_metrics[machine_type], manual_reset,
+            ))
 
     all_metrics = [m for metrics in type_metrics.values() for m in metrics]
+
     if all_metrics:
         print("\n" + _format_mean_row("Overall", all_metrics))
+
+    # ── Optional overall state mean row ──                                       
+    if state_enabled:
+        all_state_metrics = [
+            m for metrics in type_state_metrics.values() for m in metrics
+        ]
+        if all_state_metrics:
+            print(_format_state_mean_row("Overall", all_state_metrics, manual_reset))
 
     print("=" * 60)
 
@@ -327,12 +529,16 @@ def main(config_path: str = "simulation/configs/default.yaml"):
     # Memory allocation 
     accountant = MemoryAccountant()                                                                              
     accountant.snapshot("system_init")  
+
                                                                                     
     with open(config_path) as f:
         config = yaml.safe_load(f)                                                    
                                                                                     
     sim = config["simulation"]
     data = config["data"]  
+
+    state_enabled = config["simulation"].get("state_enabled", False)             
+    manual_reset = config["simulation"].get("manual_reset", False)   
 
     snr = _resolve_snr(config)                                                           
                 
@@ -415,7 +621,11 @@ def main(config_path: str = "simulation/configs/default.yaml"):
         n_anomalies = sum(1 for r in result.node_results if r.label == 1)
         print(_format_step(result, data["machine_types"]))                                       
                                                                                     
-    _print_results(nodes_by_type)  
+    _print_results(
+        nodes_by_type,
+        state_enabled=state_enabled,
+        manual_reset=manual_reset,
+                )  
 
     accountant.snapshot(
         "post_evaluation",                                                                                       

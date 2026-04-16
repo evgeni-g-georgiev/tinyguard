@@ -25,6 +25,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.transforms import blended_transform_factory
 from sklearn.metrics import roc_auc_score                                                              
 from sklearn.manifold import TSNE                                                   
                                                                      
@@ -94,6 +95,110 @@ def _find_anomaly_bands(labels: list[int]) -> list[tuple[int, int]]:
     if start is not None:
         bands.append((start, len(labels) - 1))                                      
     return bands
+
+
+# ── State bracket helpers ────────────────────────────────────────────────── 
+                                                                           
+def _compute_bracket_data(                                                            
+    node: Node, 
+    manual_reset: bool,                                                               
+) -> dict | None:
+    """Extract per-block lag and unflag arrays from a node's state predictions.
+                                                                                    
+    Returns None if state_predictions aren't populated or there are no
+    anomaly blocks. Otherwise returns:                                                
+        bands:   list of (start, end_inclusive) tuples                                
+        lags:    list of (int | None) per band — clips into block of first fire
+        unflags: list of (int | None) per band — clips after block end to first       
+                un-fire (non-manual-reset only; always None in manual_reset mode)
+    """                                                                               
+    state = node.state_predictions
+    if not state or all(s is None for s in state):                                    
+        return None
+
+    bands = _find_anomaly_bands(node.labels)                                          
+    if not bands:
+        return None                                                                   
+                
+    lags: list[int | None] = []
+    unflags: list[int | None] = []
+
+    for start, end in bands:
+        lag: int | None = None
+        for i in range(start, end + 1):                                               
+            if state[i] == 1:
+                lag = i - start                                                       
+                break
+        lags.append(lag)
+
+        unflag: int | None = None
+        if not manual_reset and lag is not None and end + 1 < len(state):
+            for j in range(end + 1, len(state)):                                      
+                if state[j] == 0:
+                    unflag = j - (end + 1)                                            
+                    break
+        unflags.append(unflag)                                                        
+
+    return {"bands": bands, "lags": lags, "unflags": unflags}                         
+                
+
+def _draw_state_brackets(
+    ax,
+    bracket_data: dict,
+    manual_reset: bool,
+) -> None:                                                                            
+    """Draw horizontal bars above anomaly bands showing state detection timing.
+                                                                                    
+    Uses a blended transform (x = data coordinates, y = axes fraction) so
+    bars sit at a fixed height regardless of score range.                             
+                                                                                    
+    Bar types:                                                                        
+        GREEN  at y=0.97 : detected block, spans [start, start+lag] inclusive.        
+                            Width = lag+1 clips so lag=0 is still visible.             
+        RED    at y=0.97 : missed block, spans full block width.                      
+        BLUE   at y=0.93 : recovery lag after a detected block ends                   
+                            (non-manual-reset mode only).                              
+    """                                                                               
+    trans = blended_transform_factory(ax.transData, ax.transAxes)
+                                                                                    
+    y_detect = 0.97
+    y_unflag = 0.93
+
+    green_labeled = False
+    red_labeled = False
+    blue_labeled = False                                                              
+
+    bands = bracket_data["bands"]                                                     
+    lags = bracket_data["lags"]
+    unflags = bracket_data["unflags"]
+
+    for (start, end), lag, unflag in zip(bands, lags, unflags):                       
+        if lag is None:
+            label = None if red_labeled else "Missed block"                           
+            red_labeled = True
+            ax.plot(
+                [start - 0.5, end + 0.5], [y_detect, y_detect],
+                color="crimson", linewidth=3,                                         
+                solid_capstyle="butt", transform=trans, label=label,
+            )                                                                         
+        else:   
+            label = None if green_labeled else "Detection lag"
+            green_labeled = True                                                      
+            ax.plot(
+                [start - 0.5, start + lag + 0.5], [y_detect, y_detect],               
+                color="forestgreen", linewidth=3,
+                solid_capstyle="butt", transform=trans, label=label,
+            )                                                                         
+
+            if not manual_reset and unflag is not None:                               
+                label = None if blue_labeled else "Recovery lag"
+                blue_labeled = True
+                ax.plot(
+                    [end + 0.5, end + 1 + unflag + 0.5], [y_unflag, y_unflag],
+                    color="royalblue", linewidth=3,                                   
+                    solid_capstyle="butt", transform=trans, label=label,
+                )    
+
 
                                                                                     
 # ── Saving config + results + summary ────────────────────────────────────────
@@ -204,71 +309,158 @@ def save_results(
                                                                                     
 # ── Score-over-time plotting (existing) ──────────────────────────────────────
                                                                                     
-def _draw_node_axes(ax, node: Node, config: dict, compact: bool = False) -> None:   
+def _draw_node_axes(ax, node: Node, config: dict, compact: bool = False) -> None:     
     """Render one node's scatter + threshold + bands onto an existing Axes."""
-    timesteps = np.arange(len(node.scores))                                         
+    timesteps = np.arange(len(node.scores))                                           
     scores = np.array(node.scores)
-    labels = np.array(node.labels)                                                  
+    labels = np.array(node.labels)                                                    
+                                                                                    
+    normal_mask = labels == 0
+    anomaly_mask = labels == 1                                                        
                 
-    normal_mask = labels == 0                                                       
-    anomaly_mask = labels == 1
-                                                                                    
     shuffle_mode = config.get("simulation", {}).get("shuffle_mode", "random")
-    show_bands = shuffle_mode in ("block_random", "block_fixed")                    
+    show_bands = shuffle_mode in ("block_random", "block_fixed")
                                                                                     
-    if show_bands:
-        bands = _find_anomaly_bands(node.labels)                                    
+    bands: list[tuple[int, int]] = []                                                                                           
+    if show_bands:                                                                    
+        bands = _find_anomaly_bands(node.labels)
         for i, (start, end) in enumerate(bands):
             ax.axvspan(
                 start - 0.5, end + 0.5,
-                alpha=0.18, color="lightcoral",
-                label="Anomaly injection" if i == 0 else None,                      
-            )
-                                                                                    
-    ax.scatter(                                                                     
-        timesteps[normal_mask], scores[normal_mask],
-        s=18, c="steelblue", alpha=0.7, label="Normal clips",                       
-    )                                                                               
+                alpha=0.18, color="lightcoral",                                       
+                label="Anomaly injection" if i == 0 else None,
+            )                                                                         
+                
     ax.scatter(
-        timesteps[anomaly_mask], scores[anomaly_mask],                              
-        s=18, c="darkorange", alpha=0.7, label="Anomaly clips",
+        timesteps[normal_mask], scores[normal_mask],
+        s=18, c="steelblue", alpha=0.7, label="Normal clips",                         
     )
+    ax.scatter(                                                                       
+        timesteps[anomaly_mask], scores[anomaly_mask],
+        s=18, c="darkorange", alpha=0.7, label="Anomaly clips",
+    )                                                                                 
 
-    threshold = getattr(node.separator, "threshold", None)                          
+    threshold = getattr(node.separator, "threshold", None)                            
     if threshold is not None:
-        ax.axhline(                                                                 
+        ax.axhline(
             threshold, color="firebrick", linestyle="--", linewidth=1.2,
-            label=f"Threshold ({threshold:.3f})",                                   
+            label=f"Threshold ({threshold:.3f})",                                     
         )
                                                                                     
-    stats = _node_stats(node)                                                       
+    stats = _node_stats(node)
     auc_str = f"{stats['auc']:.4f}" if stats["auc"] is not None else "N/A"
                                                                                     
-    if compact: 
-        ax.set_title(                                                               
+    if compact:
+        ax.set_title(                                                                 
             f"{node.machine_type} {node.machine_id}: AUC={auc_str}",
-            fontsize=10,                                                            
-        )
-    else:                                                                           
-        det_str = (
-            f"{stats['detection_rate'] * 100:.1f}%"                                 
-            if stats["detection_rate"] is not None else "N/A"
-        )                                                                           
+            fontsize=10,
+        )                                                                             
+    else:
+        # ── Full-size only: state brackets + extended title ──                                                                               
+        manual_reset = config.get("simulation", {}).get("manual_reset", False)
+        bracket_data = _compute_bracket_data(node, manual_reset) if bands else None   
+                                                                                    
+        if bracket_data is not None:
+            _draw_state_brackets(ax, bracket_data, manual_reset)                      
+                
+        det_str = (                                                                   
+            f"{stats['detection_rate'] * 100:.1f}%"
+            if stats["detection_rate"] is not None else "N/A"                         
+        )       
         fa_str = (
             f"{stats['false_alarm_rate'] * 100:.1f}%"
-            if stats["false_alarm_rate"] is not None else "N/A"
+            if stats["false_alarm_rate"] is not None else "N/A"                       
         )
+                                                                                    
+        # ★ NEW — title suffix with lag/miss stats when brackets are available        
+        title_suffix = ""
+        if bracket_data is not None:                                                  
+            lags = bracket_data["lags"]
+            caught = [l for l in lags if l is not None]
+            missed = len(lags) - len(caught)
+            lag_part = (                                                              
+                f"Lag={np.mean(caught):.1f} clips"
+                if caught else "Lag=N/A"                                              
+            )   
+            title_suffix = f"  |  {lag_part}  ({missed}/{len(lags)} missed)"          
+                                                                                    
         ax.set_title(
-            f"Node: {node.machine_type} {node.machine_id}\n"
-            f"Detection={det_str}  |  False alarm={fa_str}  |  AUC={auc_str}",
-            fontsize=11,
-        )
+            f"Node: {node.machine_type} {node.machine_id}\n"                          
+            f"Detection={det_str}  |  False alarm={fa_str}  |  "                      
+            f"AUC={auc_str}{title_suffix}",
+            fontsize=11,                                                              
+        )       
         ax.set_xlabel("Timestep")
-        ax.set_ylabel("Anomaly score")
+        ax.set_ylabel("Anomaly score")                                                
         ax.legend(loc="upper left", fontsize=8)
-
+                                                                                    
     ax.grid(alpha=0.3)
 
+
+# ── State grid plot ──────────────────────────────────────────────────────── 
+                                                                             
+def _render_state_grid(                                                               
+    nodes_by_type: dict[str, list[Node]],
+    config: dict,
+    plots_dir: Path,
+) -> None:
+    """Render a 4-row × 4-col grid — same as grid.png but with state brackets         
+overlaid.                                                                             
+                                                                                    
+    Each panel reuses the existing _draw_node_axes(compact=True) for the full         
+    scatter + threshold + bands rendering, then overlays green/red/blue state         
+    brackets and extends the title with lag/miss stats.
+                                                                                    
+    Output: plots/grid_state.png
+    """                                                                               
+    manual_reset = config.get("simulation", {}).get("manual_reset", False)
+    machine_types = list(nodes_by_type.keys())                                        
+    n_cols = len(machine_types)
+    n_rows = max(len(nodes) for nodes in nodes_by_type.values())                      
+                                                                                    
+    fig, axes = plt.subplots(
+        n_rows, n_cols,                                                               
+        figsize=(5 * n_cols, 3 * n_rows),                                             
+        sharex="col", sharey="row",
+    )                                                                                 
+                
+    sample_node = next(iter(nodes_by_type.values()))[0]                               
+    sep_desc = sample_node.separator.description()
+    mode_tag = "manual-reset" if manual_reset else "auto"                             
+    fig.suptitle(                                                                     
+        f"{sep_desc}  |  block state ({mode_tag})",                                   
+        fontsize=14, fontweight="bold", y=0.995,                                      
+    )           
+                                                                                    
+    for col, machine_type in enumerate(machine_types):                                
+        nodes = nodes_by_type[machine_type]
+        for row, node in enumerate(nodes):                                            
+            ax = axes[row, col] if n_rows > 1 else axes[col]
+                                                                                    
+            # Reuse the existing compact renderer — full scatter + threshold + bands  
+            _draw_node_axes(ax, node, config, compact=True)                           
+                                                                                    
+            # Overlay state brackets on top
+            bracket_data = _compute_bracket_data(node, manual_reset)
+            if bracket_data is not None:                                              
+                _draw_state_brackets(ax, bracket_data, manual_reset)
+                                                                                    
+                # Extend the compact title with lag/miss stats
+                lags = bracket_data["lags"]                                           
+                caught = [l for l in lags if l is not None]                           
+                missed = len(lags) - len(caught)
+                lag_str = f"Lag={np.mean(caught):.1f}" if caught else "Lag=N/A"       
+                ax.set_title(                                                         
+                    f"{node.machine_type} {node.machine_id}  "
+                    f"{lag_str}  Miss={missed}/{len(lags)}",                          
+                    fontsize=9,
+                )                                                                     
+                
+    fig.supxlabel("Timestep", fontsize=11)                                            
+    fig.supylabel("Anomaly score", fontsize=11)
+    fig.tight_layout()
+    fig.savefig(plots_dir / "grid_state.png", dpi=110)
+    plt.close(fig)                            
 
 def save_plots(
     nodes_by_type: dict[str, list[Node]],
@@ -313,7 +505,17 @@ def save_plots(
     fig.supylabel("Anomaly score", fontsize=11)                                     
     fig.tight_layout()                                                              
     fig.savefig(plots_dir / "grid.png", dpi=100)
-    plt.close(fig)                                                                  
+    plt.close(fig)
+
+    state_enabled = config.get("simulation", {}).get("state_enabled", False)          
+    has_state = state_enabled and any(
+        len(node.state_predictions) > 0
+        for nodes in nodes_by_type.values()
+        for node in nodes                                                             
+    )
+    if has_state:                                                                     
+        print("  Rendering state grid...")
+        _render_state_grid(nodes_by_type, config, plots_dir)                                                                  
                                                     
 
 # ── Latent space plot helpers ────────────────────────────────────────────────     

@@ -27,7 +27,8 @@ class Node:
         frozen_embedder: BaseFrozenEmbedder,
         separator: BaseOnDeviceSeparator,                                             
         topology: BaseTopology,
-        merge: BaseMerge,                                                             
+        merge: BaseMerge,     
+        manual_reset: bool = False,                                                        
     ):                                                                              
         self.node_id = node_id
         self.machine_type = machine_type
@@ -37,10 +38,19 @@ class Node:
         self.separator = separator                                                    
         self.topology = topology                                                    
         self.merge = merge
+        self.manual_reset = manual_reset
 
         self.scores: list[float] = []                                                 
         self.labels: list[int] = []
         self.predictions: list[int | None] = []
+        self.state_predictions: list[int |None] = []
+
+        # Internal state for manual-reset mode (circuit-breaker for anomoly dection)
+        # _alarm_held is cleared by reset_state() at the engineer-reset moment. 
+        # _prev_label is read/written by the lockstep loop to detect block 
+        # transitions (anomaly block -> normal region). 
+        self._alarm_held: bool = False 
+        self._prev_label: int | None = None 
     
     def _wav_to_embedding(self, wav_path: str) -> np.ndarray:                       
         """Run the frozen pipeline: wav → preprocessor → embedder → embedding."""
@@ -76,13 +86,56 @@ class Node:
         score = self.separator.score(embedding)     
                                                                                                     
         threshold = getattr(self.separator, "threshold", None)
-        predicted_label = int(score > threshold) if threshold is not None else None                 
+        predicted_label = int(score > threshold) if threshold is not None else None    
+
+        # ── State prediction (held open i manual-reset mode) ────────────────────────────────────────────────────────             
+        state_pred = self._compute_state(score, threshold) 
                                                                                     
         self.scores.append(score)                                                                   
         self.labels.append(label)                                                                   
         self.predictions.append(predicted_label)
+        self.state_predictions.append(state_pred)
                                                                                                     
         return score, predicted_label  
+    
+
+    def _compute_state(self,
+                       score: float,
+                       threshold: float | None,
+    ) -> int | None:
+        """Compute the state prediction for this clip.
+
+        Delegates the raw "is this clip an anomaly state?" decision to
+        separator.state(score). In manual_reset mode, once the separator
+        has ever fired in the current window the Node holds the alarm
+        high until reset_state() is called — i.e. the node behaves like                          
+        a circuit breaker that needs a manual reset to clear.
+                                                                                                
+        In the default (non-manual-reset) mode, the state simply mirrors
+        whatever separator.state(score) returns on each clip.                                    
+        """                                                                                      
+        if threshold is None:                                                                    
+            return None                                                                          
+        raw_state = self.separator.state(score)
+        if not self.manual_reset:
+            return raw_state                                                                     
+        if raw_state == 1:
+            self._alarm_held = True                                                              
+        return 1 if self._alarm_held else 0
+    
+    def reset_state(self) -> None:                                               
+        """Clear the held alarm (manual-reset engineer action).                                  
+                                                                                                
+        Called by the lockstep loop on the first normal clip after an
+        anomaly block when manual_reset mode is on. Clears the Node's                            
+        own alarm-held flag and delegates to separator.reset_state() so                          
+        any stateful separator override (e.g. future EWMA) can clear                             
+        its accumulators at the same moment.                                                     
+        """                                                                                      
+        self._alarm_held = False                                                                 
+        self.separator.reset_state()                                                             
+                  
+
 
     def get_neighbours(self) -> list[str]:
         """Return IDs of nodes this node can communicate with."""

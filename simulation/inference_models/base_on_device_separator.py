@@ -51,6 +51,28 @@ class BaseOnDeviceSeparator(ABC):
                     f"Expected: percentile, max_margin, n_sigma"
                 )
         
+    # ── State Layer  ────────────────────────────────────────────────────────
+    def state(self, score: float, ** kwargs) -> int: 
+        """Returns the current state (0 = normal, 1 = anomoaly) for this clip. 
+        
+        Default: stateless threshold compare.
+        Return 0 if no threshold has been calibrated yet.
+        """
+        threshold = getattr(self, "threshold", None)
+        if threshold is None: 
+            return 0 
+        return int(score > threshold)
+    
+
+    def reset_state(self) -> None: 
+        """Reser the temporal state (latching mode engineer reset). 
+        
+        Default: no-op, since the base state() 0 is stateless.
+        Stateful overrides should clear their accumataroes here
+        """
+        pass 
+
+
     @abstractmethod
     def get_shareable_state(self) -> dict:
         """Return state to share with neighbours during federation."""

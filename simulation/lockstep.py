@@ -123,11 +123,20 @@ def evaluate(
         for machine_type, nodes in nodes_by_type.items():
             timelines = timelines_by_type[machine_type]                               
                 
-            for node, timeline in zip(nodes, timelines):                              
+            for node, timeline in zip(nodes, timelines):     
+                curr_label = timeline.test_labels[t]
+
+                # ── Manual-reset at bloack boundaries ────────────────────────────────────────────────────────
+                if node.manual_reset and node._prev_label == 1 and curr_label == 0:
+                    node.reset_state()
+
                 score, predicted = node.process_clip(
                     wav_path=timeline.test_paths[t],
                     label=timeline.test_labels[t],                                                  
-                )                                 
+                )       
+                
+                node._prev_label = curr_label
+
                 step.node_results.append(                                                           
                     NodeStepResult(      
                         node_id=node.node_id,

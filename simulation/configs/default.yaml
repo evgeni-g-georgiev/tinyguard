@@ -48,7 +48,7 @@ twfr:    {}     # uses audio params from identity_embedder
 svdd:           
   hidden_dim:   32                                                                    
   output_dim:   8
-  threshold_mode:       max_margin    # percentile | max_margin | n_sigma
+  threshold_mode:       percentile    # percentile | max_margin | n_sigma
   threshold_percentile: 95.0          # used when mode = percentile
   threshold_margin:     0.0           # used when mode = max_margin (additive)
   n_sigma:              3.0           # used when mode = n_sigma
@@ -82,12 +82,15 @@ soft_param:
 
 # ── Simulation parameters ────────────────────────────────────────────────────       
 simulation:
-  warmup_count:   400                                                                  
+  warmup_count:   40                                                                  
   shuffle_mode:   block_fixed         # random | block_random | block_fixed
   block_size:     5                                                                   
-  block_interval: 20
+  block_interval: 4
   extract_mode:   precompute     # precompute | online                                
-  seed:           42                                                                  
+  seed:           42   
+  state_enabled:  false                    # print block-level state metrics + render grid_state.png                                                                        
+  manual_reset:   false                    # circuit-breaker mode: hold alarm until engineer reset                                                                        
+                                                                            
   
 # ── Federation ───────────────────────────────────────────────────────────────       
 federation:     
@@ -105,7 +108,7 @@ memory:
 # at plot time (does NOT capture them during the simulation), so memory           
 # accounting stays honest. Slow — adds ~1-2 min per run with 16 nodes.            
 latent_plot:                                                                      
-  enabled:      true                                                              
+  enabled:      false                                                              
   perplexity:   30        # t-SNE perplexity (5-50, default 30)                   
   random_state: 42        # for reproducibility                                   
   per_frame:    true      # render per-frame t-SNE panel                          
@@ -116,7 +119,7 @@ latent_plot:
 # ── SNR selection ────────────────────────────────────────────────────────────
 # Which MIMII SNR variant to run against. Must be one of: 6dB, 0dB, -6dB.
 # Resolved into data.mimii_root and data.splits_dir via {snr} placeholders.
-snr: 0dB
+snr: 6dB
 
 # ── Data ─────────────────────────────────────────────────────────────────────
 data:                                                                                 
