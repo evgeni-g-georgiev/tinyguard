@@ -54,4 +54,4 @@ ROLLING_WINDOW  = 5             # ROLLING_WINDOW (tinyml_gmm.ino)
 # NODE_R_A is the deployment-faithful mean-pooling node (mirrors hardware).
 # NODE_R_B is a second node with different temporal emphasis for fusion.
 NODE_R_A        = 1.0           # Node A: mean pooling (r=1 hardware baseline)
-NODE_R_B        = 0.5           # Node B: GWRP emphasising high-energy frames
+NODE_R_B        = 0.0           # Node B: GWRP emphasising high-energy frames
