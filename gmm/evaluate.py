@@ -32,7 +32,7 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import MIMII_ROOT as _DEFAULT_MIMII_ROOT
-from gmm.config import CLIP_SECS, ROLLING_WINDOW
+from gmm.config import CLIP_SECS, N_MELS, ROLLING_WINDOW
 from gmm.features import load_log_mel
 
 
@@ -47,11 +47,16 @@ def _score_paths(
 
     Files that raise RuntimeError during loading (e.g. corrupt or zero-length
     WAVs) are skipped with a warning so one bad file does not abort a round.
+
+    The mel resolution is read from detector.n_mels_ so that clips are always
+    loaded at the resolution the detector was trained on.  Falls back to N_MELS
+    (128) for detectors that pre-date this attribute (backwards compatibility).
     """
+    n_mels = getattr(detector, "n_mels_", N_MELS)
     scores: list[float] = []
     for path in tqdm(wav_paths, desc=desc, leave=False, unit="clip"):
         try:
-            scores.append(detector.score(load_log_mel(path)))
+            scores.append(detector.score(load_log_mel(path, n_mels=n_mels)))
         except RuntimeError as exc:
             print(f"  Warning: {exc}", file=sys.stderr)
     return scores

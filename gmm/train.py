@@ -80,7 +80,7 @@ from config import (
     MIMII_0DB_SPLITS,
     MIMII_NEG6DB_SPLITS,
 )
-from gmm.config import N_FIT_CLIPS, N_TRAIN_CLIPS, N_VAL_CLIPS, NODE_R_A, NODE_R_B
+from gmm.config import N_FIT_CLIPS, N_MELS, N_TRAIN_CLIPS, N_VAL_CLIPS, NODE_R_A, NODE_R_B
 from gmm.detector import GMMDetector
 from gmm.evaluate import evaluate_machine
 from gmm.features import load_log_mel
@@ -126,6 +126,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Override output root directory (default: inferred from --dataset).",
     )
     parser.add_argument(
+        "--n-mels", type=int, default=N_MELS, metavar="N",
+        help=(
+            f"Number of mel frequency bins (default: {N_MELS}). "
+            "Use 64 to evaluate the reduced-resolution Chip B deployment path. "
+            "When not the default, outputs go to <dataset>_<N>mel/ automatically."
+        ),
+    )
+    parser.add_argument(
         "--verbose", action="store_true",
         help="Print per-machine calibration parameters and node weights.",
     )
@@ -134,12 +142,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _load_clips(paths: list[str], desc: str) -> list:
+def _load_clips(paths: list[str], desc: str, n_mels: int = N_MELS) -> list:
     """Load log-mel spectrograms, skipping files that fail to load."""
     log_mels: list = []
     for path in tqdm(paths, desc=desc, leave=False, unit="clip"):
         try:
-            log_mels.append(load_log_mel(path))
+            log_mels.append(load_log_mel(path, n_mels=n_mels))
         except RuntimeError as exc:
             print(f"    Warning: {exc}", file=sys.stderr)
     return log_mels
@@ -195,6 +203,12 @@ def main() -> None:
     splits_path = Path(args.splits)  if args.splits  else splits_default
     out_root    = Path(args.out_dir) if args.out_dir else out_default
 
+    # When --n-mels differs from the default, write results to a separate dir
+    # so 128-mel and 64-mel outputs never overwrite each other.
+    # Explicit --out-dir always takes precedence over this auto-suffix.
+    if args.n_mels != N_MELS and not args.out_dir:
+        out_root = out_root.parent / f"{out_root.name}_{args.n_mels}mel"
+
     if not splits_path.exists():
         print(f"ERROR: Splits manifest not found at {splits_path}")
         print(
@@ -217,8 +231,9 @@ def main() -> None:
         f"TWFR-GMM Node Learning comparison  [{args.dataset}]\n"
         f"  Node A: r={NODE_R_A} (mean pooling, hardware baseline)\n"
         f"  Node B: r={NODE_R_B} (energy-weighted GWRP)\n"
-        f"  fit clips={N_FIT_CLIPS}  val clips={N_VAL_CLIPS}  "
+        f"  n_mels={args.n_mels}  fit clips={N_FIT_CLIPS}  val clips={N_VAL_CLIPS}  "
         f"(mirrors deployment/config.h)\n"
+        f"  outputs → {out_root}\n"
     )
 
     results_node_a:        dict = {}
@@ -250,8 +265,8 @@ def main() -> None:
             fit_paths = all_paths[:N_FIT_CLIPS]
             val_paths = all_paths[N_FIT_CLIPS:N_FIT_CLIPS + N_VAL_CLIPS]
 
-            fit_log_mels = _load_clips(fit_paths, "    load fit")
-            val_log_mels = _load_clips(val_paths, "    load val")
+            fit_log_mels = _load_clips(fit_paths, "    load fit", n_mels=args.n_mels)
+            val_log_mels = _load_clips(val_paths, "    load val", n_mels=args.n_mels)
 
             if not fit_log_mels:
                 print(f"    No valid fit clips — skipping.\n")
@@ -262,13 +277,13 @@ def main() -> None:
 
             # ── Step 1: Fit Node A (single-node, r=NODE_R_A) ─────────────────
             # Local adaptation: θ_A = U_A(D_fit, c_A=r=1.0)  (paper eq. 1-2)
-            det_a = GMMDetector(r=NODE_R_A)
+            det_a = GMMDetector(r=NODE_R_A, n_mels=args.n_mels)
             det_a.fit(fit_log_mels, val_log_mels)
             det_a.save(dir_node_a / f"{mtype}_{mid}.pkl")
 
             # ── Step 2: Fit Node B (single-node, r=NODE_R_B) ─────────────────
-            # Local adaptation: θ_B = U_B(D_fit, c_B=r=0.5)  (paper eq. 1-2)
-            det_b = GMMDetector(r=NODE_R_B)
+            # Local adaptation: θ_B = U_B(D_fit, c_B=r=0.0)  (paper eq. 1-2)
+            det_b = GMMDetector(r=NODE_R_B, n_mels=args.n_mels)
             det_b.fit(fit_log_mels, val_log_mels)
             det_b.save(dir_node_b / f"{mtype}_{mid}.pkl")
 

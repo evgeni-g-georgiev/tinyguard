@@ -166,6 +166,7 @@ class NodeLearning:
         # Human-readable descriptor for plot subtitles and YAML output.
         self.r_           = f"{detector_a.r_}/{detector_b.r_}"
         self.n_components = detector_a.n_components
+        self.n_mels_      = detector_a.n_mels_
 
         # ── Fit-quality weights (paper §3, eq. 5 context-weighted interaction) ─
         # w_i = softmax(−μ_val_i): a node whose GMM fits normal data better

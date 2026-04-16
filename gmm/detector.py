@@ -48,6 +48,7 @@ from gmm.config import (
     CUSUM_H_FLOOR,
     CUSUM_H_SIGMA,
     N_COMPONENTS,
+    N_MELS,
     R,
     SEED,
     THRESHOLD_PCT,
@@ -113,6 +114,7 @@ class GMMDetector:
         cusum_h_sigma:  float = CUSUM_H_SIGMA,
         cusum_h_floor:  float = CUSUM_H_FLOOR,
         threshold_pct:  float = THRESHOLD_PCT,
+        n_mels:         int   = N_MELS,
     ) -> None:
         self.r_            = r
         self.n_components  = n_components
@@ -120,6 +122,7 @@ class GMMDetector:
         self.cusum_h_sigma = cusum_h_sigma
         self.cusum_h_floor = cusum_h_floor
         self.threshold_pct = threshold_pct
+        self.n_mels_       = n_mels
 
         # Populated by fit()
         self.gmm_        : DiagGMM | None    = None
@@ -260,6 +263,7 @@ class GMMDetector:
             "cusum_h_sigma": self.cusum_h_sigma,
             "cusum_h_floor": self.cusum_h_floor,
             "seed":          self.seed,
+            "n_mels":        self.n_mels_,
             "n_train_clips": len(self.train_nlls_),
             "feature_dim":   int(self.gmm_.mu_.shape[1]),
         }
@@ -282,6 +286,7 @@ class GMMDetector:
             cusum_h_sigma = art.get("cusum_h_sigma", CUSUM_H_SIGMA),
             cusum_h_floor = art.get("cusum_h_floor", CUSUM_H_FLOOR),
             threshold_pct = art.get("threshold_pct", THRESHOLD_PCT),
+            n_mels        = art.get("n_mels", N_MELS),   # backwards-compat: old pkls lack this key
         )
 
         gmm           = DiagGMM(n_components=art["n_components"], seed=art["seed"])

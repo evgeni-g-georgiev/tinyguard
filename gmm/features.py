@@ -40,21 +40,24 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from config import GMM_N_MELS
 from preprocessing.gmm_input import load_full_clip_log_mel
 
 
-def load_log_mel(wav_path: str) -> np.ndarray:
+def load_log_mel(wav_path: str, n_mels: int = GMM_N_MELS) -> np.ndarray:
     """Load a WAV file and return its full-clip log-mel spectrogram.
 
     Parameters
     ----------
     wav_path : str
+    n_mels : int
+        Number of mel frequency bins.  Defaults to GMM_N_MELS (128).
 
     Returns
     -------
-    log_mel : np.ndarray, shape (N_MELS, T)
+    log_mel : np.ndarray, shape (n_mels, T)
     """
-    return load_full_clip_log_mel(wav_path)
+    return load_full_clip_log_mel(wav_path, n_mels=n_mels)
 
 
 def gwrp_weights(T: int, r: float) -> np.ndarray:
