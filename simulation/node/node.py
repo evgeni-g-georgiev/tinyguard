@@ -53,7 +53,7 @@ class Node:
         self._prev_label: int | None = None 
     
     def _wav_to_embedding(self, wav_path: str) -> np.ndarray:                       
-        """Run the frozen pipeline: wav → preprocessor → embedder → embedding."""
+        """Run the frozen pipeline: wav -> preprocessor -> embedder -> embedding."""
         preprocessed_audio = self.preprocessor.process(wav_path)                      
         embedding = self.frozen_embedder.embed(preprocessed_audio)
         return embedding   

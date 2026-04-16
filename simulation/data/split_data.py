@@ -316,7 +316,7 @@ def main():
     )                                                                                 
     args = parser.parse_args()
 
-    mimii_root = args.mimii_root /args.snr 
+    mimii_root = args.mimii_root / args.snr 
     splits_dir = args.splits_dir / args.snr
 
     print(f"SNR: {args.snr}")                                                     
