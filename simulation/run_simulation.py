@@ -30,7 +30,7 @@ from simulation import lockstep
 from simulation.lockstep import TimestepResult                                                    
 from simulation.reporting import make_run_dir, save_results, save_plots, save_latent_plots
 
-from simulation.memory_accountant import MemoryAccountant   
+# from simulation.memory_accountant import MemoryAccountant   
 
 
 VALID_SNRS = ("6dB", "0dB", "-6dB")    
@@ -527,8 +527,8 @@ def main(config_path: str = "simulation/configs/default.yaml"):
     """Load config, build components, run simulation, print results."""
 
     # Memory allocation 
-    accountant = MemoryAccountant()                                                                              
-    accountant.snapshot("system_init")  
+    # accountant = MemoryAccountant()                                                                              
+    # accountant.snapshot("system_init")  
 
                                                                                     
     with open(config_path) as f:
@@ -594,16 +594,16 @@ def main(config_path: str = "simulation/configs/default.yaml"):
                 
     # Build components and nodes                                                      
     preprocessor, frozen_embedder, topology, merge = _build_shared_components(config)
-    accountant.snapshot("embedder_loaded", frozen_embedder=frozen_embedder)                                      
+    # accountant.snapshot("embedder_loaded", frozen_embedder=frozen_embedder)                                      
                                                                                                                    
     nodes_by_type = _build_nodes(                                                                                
         config, preprocessor, frozen_embedder, topology, merge, timelines_by_type,                               
     )                                                                                                            
-    accountant.snapshot(
-        "nodes_built_pre_warmup",
-        nodes_by_type=nodes_by_type,                                                                             
-        frozen_embedder=frozen_embedder,
-    )                                                                              
+    # accountant.snapshot(
+    #     "nodes_built_pre_warmup",
+    #     nodes_by_type=nodes_by_type,                                                                             
+    #     frozen_embedder=frozen_embedder,
+    # )                                                                              
                 
     # Run lockstep                                                                    
     fed = config.get("federation", {})
@@ -627,11 +627,11 @@ def main(config_path: str = "simulation/configs/default.yaml"):
         manual_reset=manual_reset,
                 )  
 
-    accountant.snapshot(
-        "post_evaluation",                                                                                       
-        nodes_by_type=nodes_by_type,
-        frozen_embedder=frozen_embedder,
-    )   
+    # accountant.snapshot(
+    #     "post_evaluation",                                                                                       
+    #     nodes_by_type=nodes_by_type,
+    #     frozen_embedder=frozen_embedder,
+    # )   
 
     runtime_seconds = time.time() - start_time
                                                                                       
@@ -655,7 +655,7 @@ def main(config_path: str = "simulation/configs/default.yaml"):
         run_dir=run_dir,
     )
 
-    accountant.save(run_dir) 
+    # accountant.save(run_dir) 
     
                      
     print(f"Done. Runtime: {runtime_seconds:.1f}s")                                                   

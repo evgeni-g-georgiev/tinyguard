@@ -97,10 +97,10 @@ federation:
   enabled:  false                                                                     
   interval: 10                                                                        
   
-# ── Memory tracking ──────────────────────────────────────────────────────────       
-memory:         
-  analytical:      true                                                               
-  python_tracking: false
+# # ── Memory tracking ──────────────────────────────────────────────────────────       
+# memory:         
+#   analytical:      true                                                               
+#   python_tracking: false
 
 
 # ── Latent space plots ───────────────────────────────────────────────────────
