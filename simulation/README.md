@@ -1,67 +1,66 @@
-# Simulation Module
+# Simulation                                                                                          
+                                                                                                      
+Lockstep simulation of on-device anomalous sound detection across 16 MIMII                            
+machines (4 types × 4 IDs).
+                                                                                                      
+## Quickstart   
 
-  Lockstep simulation of on-device anomalous sound detection across all 16            
-  MIMII machines (4 types × 4 IDs). Runs every node through the same time
-  sequence in parallel, exactly as real devices would experience it.                  
-                  
-  ## What it does                                                                     
-                  
-  For each configured pipeline (CNN+SVDD or TWFR+GMM):                                
-                  
-  1. Loads all 16 nodes' audio splits                                                 
-  2. Calibrates each node's separator on its warmup clips
-  3. Steps through the test timeline one clip at a time, scoring every                
-     node simultaneously                                                              
-  4. Saves results, AUC tables, and plots to a timestamped output directory           
-                                                                                      
-  ## Setup (one-time)                                                                 
-                                                                                      
-  ```bash         
-  # 1. Activate the project venv
-  source .venv/bin/activate                                                           
-   
-  # 2. Download MIMII data (~30 GB, takes ~1 hour)                                    
-  python data/download_mimii.py
-                                                                                      
-  # 3. Create the simulation splits (warmup / test_normal / test_abnormal             
-  #    per node, symlinked from data/mimii to avoid duplication)                      
-  python -m simulation.data.split_data                                                
-                                                                                      
-  Run                                                                                 
-                                                                                      
-  python -m simulation.run_simulation
+```bash
+# 1. Download MIMII data for one SNR (~30 GB per SNR)
+python data/download_mimii.py --snr 6dB      # also: 0dB, -6dB                                        
+                                                                                                      
+# 2. Split into warmup / test_normal / test_abnormal per node                                         
+python -m simulation.data.split_data --snr 6dB                                                        
+                
+# 3. Run the simulation
+python -m simulation.run_simulation
+                                                                                                      
+Step 2 is optional — the simulation auto-splits on first run if the splits                            
+dir is missing. Step 1 is not optional; raw MIMII data must be on disk.                               
+                                                                                                      
+Switching SNR   
+                                                                                                      
+Edit simulation/configs/default.yaml:                                                                 
+snr: 0dB    # 6dB | 0dB | -6dB
+                                                                                                      
+Or download + split a new SNR and re-run. Each SNR lives in its own dir
+(data/mimii/<snr>/, simulation/data/splits/<snr>/), so they coexist.                                  
+  
+Output                                                                                                
+                
+Each run creates a timestamped directory under simulation/outputs/runs/:                              
+                
+simulation/outputs/runs/2026-04-16_10-30-00/
+  config.yaml       — verbatim copy of the YAML used
+  results.json      — per-node scores, labels, AUC, confusion                                         
+  summary.txt       — human-readable AUC table
+  plots/                                                                                              
+    grid.png        — 4×4 score timeline grid                                                         
+    grid_state.png  — 4×4 with state detection brackets (when state_enabled)
+    fan_id_00.png   — per-node full-size timeline                                                     
+    ...         
+    latent/         — t-SNE and score distribution grids (when latent_plot.enabled)                   
+                                                                                                      
+Module layout
+                                                                                                      
+simulation/     
+  run_simulation.py   — entry point: reads YAML, wires everything, runs lockstep
+  builders.py         — constructs components from config (preprocessor, embedder, etc.)              
+  metrics.py          — pure metric computation (NodeMetrics, BlockStateMetrics)                      
+  formatters.py       — terminal output formatting (print_results, format_step)                       
+  lockstep.py         — the lockstep evaluation loop                                                  
+  registry.py         — component registry (register/create pattern)                                  
+  reporting/          — all disk IO: results serialisation + matplotlib plots                         
+  configs/            — YAML experiment configs                                                       
+  data/               — data loading, splitting, timeline construction
+  inference_models/   — separator and embedder implementations                                        
+  node/               — Node class, topology, merge
 
-  Reads simulation/configs/default.yaml. Switch pipelines by changing                 
-  three selector keys at the top of the YAML:
-                                                                                      
-  preprocessor:    log_mel | twfr
-  frozen_embedder: acoustic_encoder | identity                                        
-  separator:       svdd | gmm | identity                                              
-                                                                                      
-  Output                                                                              
-                                                                                      
-  Each run creates a fresh directory under simulation/outputs/runs/:
+Disabling slow steps
 
-  simulation/outputs/runs/2026-04-10_14-23-05/                                        
-    config.yaml          (verbatim copy of the YAML used)                             
-    results.json         (per-node scores, labels, AUC)                               
-    summary.txt          (human-readable AUC table with metadata)                     
-    plots/                                                                            
-      grid.png           (4×4 grid of all nodes' score timelines)
-      fan_id_00.png      (per-node score timeline)                                    
-      ...                                                                             
-      latent/                                                                         
-        grid_per_frame.png  (4×4 grid of t-SNE plots)                                 
-        grid_per_clip.png                                                             
-        fan_id_00.png       (3-panel: t-SNE + histogram per node)
-        ...                                                                           
-                  
-  config.yaml and results.json are sufficient to fully reproduce the                  
-  plots — the simulation never overwrites previous runs.
-                                                                                      
-  Disabling slow steps
-                                                                                      
-  Latent t-SNE plots add ~1-2 minutes per run. Disable them while iterating:          
-   
-  latent_plot:                                                                        
-    enabled: false
+Latent t-SNE plots 
+latent_plot:
+  enabled: false      
+---
+
+                
