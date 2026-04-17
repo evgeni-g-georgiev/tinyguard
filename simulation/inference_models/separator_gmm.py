@@ -22,6 +22,7 @@ import numpy as np
 from simulation.registry import register_separator                                  
 from simulation.inference_models.base_on_device_separator import BaseOnDeviceSeparator                                                               
 from gmm.detector import GMMDetector
+from gmm.features import extract_feature_r 
                                                                                     
                 
 @register_separator("gmm")
@@ -37,7 +38,8 @@ class GMMSeparator(BaseOnDeviceSeparator):
         threshold_margin: float = 0.0,     
         n_sigma: float = 3.0,                                    
         seed: int = 42,
-        holdout_fraction: float = 0.2,                                              
+        holdout_fraction: float = 0.2,  
+        **kwargs,                                            
     ):                                                                              
         self.n_components = n_components
         self.covariance_type = covariance_type                                      
@@ -73,8 +75,8 @@ class GMMSeparator(BaseOnDeviceSeparator):
         # fits the GMM, and computes its own threshold from val_log_mels.
         self.detector = GMMDetector(                                                
             n_components=self.n_components,
-            covariance_type=self.covariance_type,                                   
-            threshold_pct=self.threshold_pct,
+            # covariance_type=self.covariance_type,                                   
+            # threshold_pct=self.threshold_pct,
             seed=self.seed,                                                         
         )
         self.detector.fit(train_clips, val_log_mels=holdout_clips)                  
@@ -113,15 +115,9 @@ class GMMSeparator(BaseOnDeviceSeparator):
 
     def description(self) -> str:
           """e.g. 'GMM (2 components, diag cov)'"""                                   
-          return f"GMM ({self.n_components} components, {self.covariance_type} cov)"
+          return f"GMM ({self.n_components} components, diag, cov)"  #Hard coded diag as now  its only that 
     
 
     def project(self, clip_log_mel: np.ndarray) -> np.ndarray:
-        """Return the (n_mels,) TWFR feature vector for the clip.                   
-                                                                
-        This is what GMMDetector.score() consumes internally before                 
-        computing the negative log-likelihood. Used by reporting.py                 
-        for latent plots.                                                           
-        """                                                                         
-        from gmm.features import twfr_feature                                       
-        return twfr_feature(clip_log_mel, self.detector.r_)
+        """Return the TWFR featur vector for the clip"""                                                                         
+        return extract_feature_r(clip_log_mel, self.detector.r_)

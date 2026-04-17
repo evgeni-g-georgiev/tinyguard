@@ -61,7 +61,7 @@ svdd:
                                                                                       
 gmm:
   n_components:   2                                                                   
-  covariance_type: diag
+  # covariance_type: diag
   threshold_mode:       n_sigma    # percentile | max_margin | n_sigma
   threshold_percentile: 99.0          # used when mode = percentile
   threshold_margin:     500.0           # used when mode = max_margin (additive)
