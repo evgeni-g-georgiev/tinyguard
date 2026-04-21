@@ -5,7 +5,7 @@ from preprocessing.loader import load_audio
 from preprocessing.mel_spectrogram import make_gmm_log_mel_spectrogram
 
 
-def load_full_clip_log_mel(wav_path, n_mels=GMM_N_MELS):
+def load_full_clip_log_mel(wav_path, n_mels=GMM_N_MELS, channel=None):
     """Load one clip and return the full-clip log-mel spectrogram for GMM.
 
     Parameters
@@ -14,9 +14,12 @@ def load_full_clip_log_mel(wav_path, n_mels=GMM_N_MELS):
     n_mels : int
         Number of mel frequency bins.  Defaults to GMM_N_MELS (128).
         Pass 64 to match the reduced-resolution Chip B deployment path.
+    channel : int or None
+        Microphone channel index (0-7 for MIMII).  None mixes all channels
+        to mono (legacy behaviour).
     """
 
-    audio, _ = load_audio(wav_path, sampling_frequency=SAMPLE_RATE, mono=True)
+    audio, _ = load_audio(wav_path, sampling_frequency=SAMPLE_RATE, mono=True, channel=channel)
 
     log_mel = make_gmm_log_mel_spectrogram(
         waveform=audio.astype(np.float32),

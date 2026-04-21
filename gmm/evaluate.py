@@ -43,20 +43,33 @@ def _score_paths(
     detector,
     desc: str = "",
 ) -> list[float]:
-    """Score a list of WAV files, returning one NLL per clip.
+    """Score a list of WAV files, returning one score per clip.
 
-    Files that raise RuntimeError during loading (e.g. corrupt or zero-length
-    WAVs) are skipped with a warning so one bad file does not abort a round.
+    Supports three modes depending on attributes present on the detector:
+      - NodeLearning with mic heterogeneity (channel_a_ and channel_b_ set):
+        loads each clip twice (once per channel) and calls score_pair().
+      - Single-node detector with channel_ set:
+        loads the specified mic channel and calls score().
+      - Legacy / mono-mix (no channel attributes):
+        loads mono-mixed audio and calls score().
 
-    The mel resolution is read from detector.n_mels_ so that clips are always
-    loaded at the resolution the detector was trained on.  Falls back to N_MELS
-    (128) for detectors that pre-date this attribute (backwards compatibility).
+    Files that raise RuntimeError during loading are skipped with a warning.
+    The mel resolution is read from detector.n_mels_ (falls back to N_MELS).
     """
-    n_mels = getattr(detector, "n_mels_", N_MELS)
+    n_mels    = getattr(detector, "n_mels_",   N_MELS)
+    channel_a = getattr(detector, "channel_a_", None)
+    channel_b = getattr(detector, "channel_b_", None)
+    channel   = getattr(detector, "channel_",   None)
+
     scores: list[float] = []
     for path in tqdm(wav_paths, desc=desc, leave=False, unit="clip"):
         try:
-            scores.append(detector.score(load_log_mel(path, n_mels=n_mels)))
+            if channel_a is not None:
+                log_mel_a = load_log_mel(path, n_mels=n_mels, channel=channel_a)
+                log_mel_b = load_log_mel(path, n_mels=n_mels, channel=channel_b)
+                scores.append(detector.score_pair(log_mel_a, log_mel_b))
+            else:
+                scores.append(detector.score(load_log_mel(path, n_mels=n_mels, channel=channel)))
         except RuntimeError as exc:
             print(f"  Warning: {exc}", file=sys.stderr)
     return scores

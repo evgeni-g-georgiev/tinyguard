@@ -44,7 +44,7 @@ from config import GMM_N_MELS
 from preprocessing.gmm_input import load_full_clip_log_mel
 
 
-def load_log_mel(wav_path: str, n_mels: int = GMM_N_MELS) -> np.ndarray:
+def load_log_mel(wav_path: str, n_mels: int = GMM_N_MELS, channel: int | None = None) -> np.ndarray:
     """Load a WAV file and return its full-clip log-mel spectrogram.
 
     Parameters
@@ -52,12 +52,15 @@ def load_log_mel(wav_path: str, n_mels: int = GMM_N_MELS) -> np.ndarray:
     wav_path : str
     n_mels : int
         Number of mel frequency bins.  Defaults to GMM_N_MELS (128).
+    channel : int or None
+        Microphone channel index (0-7 for MIMII).  None mixes all channels
+        to mono (legacy behaviour).
 
     Returns
     -------
     log_mel : np.ndarray, shape (n_mels, T)
     """
-    return load_full_clip_log_mel(wav_path, n_mels=n_mels)
+    return load_full_clip_log_mel(wav_path, n_mels=n_mels, channel=channel)
 
 
 def gwrp_weights(T: int, r: float) -> np.ndarray:

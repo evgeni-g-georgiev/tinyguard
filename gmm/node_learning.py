@@ -199,26 +199,41 @@ class NodeLearning:
         # Stateful CUSUM accumulator — same semantics as GMMDetector._cusum_S.
         self._cusum_S: float = 0.0
 
+        # Microphone channel indices — set by train.py after construction so
+        # evaluate._score_paths knows which channel to load per node.
+        # None means mono mix (legacy / backwards-compatible behaviour).
+        self.channel_a_: int | None = None
+        self.channel_b_: int | None = None
+
     # ── Scoring ───────────────────────────────────────────────────────────────
 
     def score(self, log_mel: np.ndarray) -> float:
-        """Compute the fused anomaly z-score for a single clip.
+        """Compute the fused anomaly z-score when both nodes hear the same audio.
 
-        Each node independently scores the clip as an NLL.  The NLLs are
-        z-normalised by their respective val distributions and combined with
-        the fit-quality weights (paper §3, eq. 3 merge operator).
+        Used in the r-heterogeneity-only baseline where a single (mono-mixed)
+        log-mel is shared between nodes.  For mic-heterogeneity experiments use
+        score_pair() instead.
+        """
+        return self.score_pair(log_mel, log_mel)
+
+    def score_pair(self, log_mel_a: np.ndarray, log_mel_b: np.ndarray) -> float:
+        """Compute the fused anomaly z-score from two independent node inputs.
+
+        Each node scores its own audio independently, then z-normalised NLLs
+        are combined with fit-quality weights (paper §3, eq. 3 merge operator).
 
         Parameters
         ----------
-        log_mel : np.ndarray, shape (N_MELS, T)
+        log_mel_a : np.ndarray, shape (N_MELS, T)  — Node A's audio (e.g. mic 0)
+        log_mel_b : np.ndarray, shape (N_MELS, T)  — Node B's audio (e.g. mic 1)
 
         Returns
         -------
         fused_z : float
             Weighted sum of z-normalised NLLs.  Higher = more anomalous.
         """
-        nll_a = self._det_a.score(log_mel)
-        nll_b = self._det_b.score(log_mel)
+        nll_a = self._det_a.score(log_mel_a)
+        nll_b = self._det_b.score(log_mel_b)
         z_a   = (nll_a - self._det_a.mu_val_) / self._det_a.sigma_val_
         z_b   = (nll_b - self._det_b.mu_val_) / self._det_b.sigma_val_
         return float(self.w_a_ * z_a + self.w_b_ * z_b)

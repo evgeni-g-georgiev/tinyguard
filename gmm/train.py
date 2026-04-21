@@ -147,6 +147,18 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--mic-a", type=int, default=0, metavar="N",
+        help=(
+            "Microphone channel index for Node A (0-7, default: 0). "
+            "MIMII recordings contain 8 channels from a circular mic array. "
+            "Using distinct channels per node simulates physically separated devices."
+        ),
+    )
+    parser.add_argument(
+        "--mic-b", type=int, default=1, metavar="N",
+        help="Microphone channel index for Node B (0-7, default: 1).",
+    )
+    parser.add_argument(
         "--verbose", action="store_true",
         help="Print per-machine calibration parameters and node weights.",
     )
@@ -155,12 +167,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _load_clips(paths: list[str], desc: str, n_mels: int = N_MELS) -> list:
+def _load_clips(paths: list[str], desc: str, n_mels: int = N_MELS, channel: int | None = None) -> list:
     """Load log-mel spectrograms, skipping files that fail to load."""
     log_mels: list = []
     for path in tqdm(paths, desc=desc, leave=False, unit="clip"):
         try:
-            log_mels.append(load_log_mel(path, n_mels=n_mels))
+            log_mels.append(load_log_mel(path, n_mels=n_mels, channel=channel))
         except RuntimeError as exc:
             print(f"    Warning: {exc}", file=sys.stderr)
     return log_mels
@@ -286,11 +298,11 @@ def main() -> None:
         splits = json.load(f)
 
     if args.r_search:
-        node_a_desc = f"r-search over {r_cands_a}"
-        node_b_desc = f"r-search over {r_cands_b}"
+        node_a_desc = f"mic{args.mic_a}  r-search over {r_cands_a}"
+        node_b_desc = f"mic{args.mic_b}  r-search over {r_cands_b}"
     else:
-        node_a_desc = f"r={NODE_R_A} (fixed)"
-        node_b_desc = f"r={NODE_R_B} (fixed)"
+        node_a_desc = f"mic{args.mic_a}  r={NODE_R_A}"
+        node_b_desc = f"mic{args.mic_b}  r={NODE_R_B}"
 
     print(
         f"TWFR-GMM Node Learning comparison  [{args.dataset}]\n"
@@ -329,25 +341,26 @@ def main() -> None:
             fit_paths = all_paths[:N_FIT_CLIPS]
             val_paths = all_paths[N_FIT_CLIPS:N_FIT_CLIPS + N_VAL_CLIPS]
 
-            fit_log_mels = _load_clips(fit_paths, "    load fit", n_mels=args.n_mels)
-            val_log_mels = _load_clips(val_paths, "    load val", n_mels=args.n_mels)
+            fit_log_mels_a = _load_clips(fit_paths, "    fit A", n_mels=args.n_mels, channel=args.mic_a)
+            val_log_mels_a = _load_clips(val_paths, "    val A", n_mels=args.n_mels, channel=args.mic_a)
+            fit_log_mels_b = _load_clips(fit_paths, "    fit B", n_mels=args.n_mels, channel=args.mic_b)
+            val_log_mels_b = _load_clips(val_paths, "    val B", n_mels=args.n_mels, channel=args.mic_b)
 
-            if not fit_log_mels:
+            if not fit_log_mels_a or not fit_log_mels_b:
                 print(f"    No valid fit clips — skipping.\n")
                 continue
-            if not val_log_mels:
+            if not val_log_mels_a or not val_log_mels_b:
                 print(f"    No valid val clips — skipping.\n")
                 continue
 
             # ── Step 1: Fit Node A ────────────────────────────────────────────
-            # Fixed r: single-element r_cands_a → standard fit.
-            # r-search: selects best r from R_CANDIDATES by min val NLL,
-            # mirroring the r-search loop in deployment/tinyml_gmm.ino.
-            det_a = _fit_node(fit_log_mels, val_log_mels, r_cands_a, args.n_mels)
+            det_a = _fit_node(fit_log_mels_a, val_log_mels_a, r_cands_a, args.n_mels)
+            det_a.channel_ = args.mic_a
             det_a.save(dir_node_a / f"{mtype}_{mid}.pkl")
 
             # ── Step 2: Fit Node B ────────────────────────────────────────────
-            det_b = _fit_node(fit_log_mels, val_log_mels, r_cands_b, args.n_mels)
+            det_b = _fit_node(fit_log_mels_b, val_log_mels_b, r_cands_b, args.n_mels)
+            det_b.channel_ = args.mic_b
             det_b.save(dir_node_b / f"{mtype}_{mid}.pkl")
 
             # ── Step 3: Build NodeLearning (pairwise collaborative inference) ─
@@ -355,6 +368,8 @@ def main() -> None:
             # a fused CUSUM.  Paper eq. 3 (merge operator) and eq. 5
             # (context-weighted interaction).
             node_learning = NodeLearning(det_a, det_b)
+            node_learning.channel_a_ = args.mic_a
+            node_learning.channel_b_ = args.mic_b
 
             if args.verbose:
                 print(
@@ -386,9 +401,9 @@ def main() -> None:
                 continue
 
             # ── Step 5: Inject plot metadata and save timeline PNGs ──────────
-            _augment_result(res_a, f"r={det_a.r_}", "Anomaly score  (NLL)")
-            _augment_result(res_b, f"r={det_b.r_}", "Anomaly score  (NLL)")
-            _augment_result(res_f, f"r={det_a.r_}/{det_b.r_} node learning",
+            _augment_result(res_a, f"mic{args.mic_a}  r={det_a.r_}", "Anomaly score  (NLL)")
+            _augment_result(res_b, f"mic{args.mic_b}  r={det_b.r_}", "Anomaly score  (NLL)")
+            _augment_result(res_f, f"mic{args.mic_a}/mic{args.mic_b}  r={det_a.r_}/{det_b.r_}  node learning",
                             "Anomaly score  (fused z-score)")
 
             plot_machine(res_a, mtype, mid, dir_node_a)

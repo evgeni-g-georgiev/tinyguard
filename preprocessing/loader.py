@@ -1,21 +1,23 @@
 import librosa # For audio laoding
 
 
-def load_audio(file_path, sampling_frequency, mono):
+def load_audio(file_path, sampling_frequency, mono=True, channel=None):
     """Load a full .wav audio file.
 
     Args:
         file_path: Path to the .wav file.
         sampling_frequency: Target sampling frequency in Hz.
-        mono: If True, convert the audio to mono during loading.
+        mono: If True, mix all channels to mono (ignored when channel is set).
+        channel: If set, return only this zero-indexed microphone channel as a
+                 1-D waveform. MIMII files have 8 channels (0-7).
 
     Returns:
         waveform: 1D array containing the audio samples.
         sr: Sampling frequency of the loaded waveform.
-
-    Note: If the audio duration is T seconds, then the waveform length is:
-    len(waveform) = sr * T
     """
+    if channel is not None:
+        waveform, sr = librosa.load(file_path, sr=sampling_frequency, mono=False)
+        return waveform[channel], sr
     waveform, sr = librosa.load(file_path, sr=sampling_frequency, mono=mono)
     return waveform, sr
 
