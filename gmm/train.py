@@ -412,6 +412,7 @@ def main() -> None:
                     "n_fp":   row_a["n_fp"],
                     "n_norm": row_a["n_norm"],
                     "delays": row_a["delays"],
+                    "auc":    row_a["auc"],
                 },
                 "node_b": {
                     "r":      det_b.r_,
@@ -420,6 +421,7 @@ def main() -> None:
                     "n_fp":   row_b["n_fp"],
                     "n_norm": row_b["n_norm"],
                     "delays": row_b["delays"],
+                    "auc":    row_b["auc"],
                 },
                 "node_learning": {
                     "r":      f"{det_a.r_}/{det_b.r_}",
@@ -430,6 +432,7 @@ def main() -> None:
                     "n_fp":   row_f["n_fp"],
                     "n_norm": row_f["n_norm"],
                     "delays": row_f["delays"],
+                    "auc":    row_f["auc"],
                 },
             }
 
