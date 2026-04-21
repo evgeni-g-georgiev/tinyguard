@@ -43,40 +43,9 @@ def build_preprocessor(config: dict):
     reads its constants from config.py (matching the team's gmm/features.py),                         
     and identity is for pre-extracted data.                                                           
     """                                                                                               
-    name = config["preprocessor"]                                                                     
-                                                                                                    
-    if name == "log_mel":
-        from preprocessing.loader import load_audio, split_into_chunks                                
-        from preprocessing.compute_mels import log_mel                                                
-                                                                                                    
-        embedder_name = config["frozen_embedder"]                                                     
-        embedder_block = config.get(embedder_name) or {}                                              
-                                                                                                    
-        if "sample_rate" not in embedder_block or "frame_seconds" not in embedder_block:              
-            raise ValueError(                                                                         
-                f"log_mel preprocessor needs sample_rate and frame_seconds in "                       
-                f"the active embedder's config block ('{embedder_name}'), "                           
-                f"but they're missing. The log_mel preprocessor only makes "                          
-                f"sense paired with an embedder that declares these params."                          
-            )                                                                                         
-                                                                                                    
-        class LogMelPreprocessor:
-            def __init__(self, audio_config: dict):
-                self.sample_rate = audio_config["sample_rate"]                                        
-                self.frame_seconds = audio_config["frame_seconds"]
-                                                                                                    
-            def process(self, wav_path: str) -> np.ndarray:
-                waveform, sr = load_audio(
-                    wav_path, self.sample_rate, mono=True,                                            
-                )
-                chunks = split_into_chunks(                                                           
-                    waveform, sr, self.frame_seconds,                                                 
-                )
-                return np.stack([log_mel(chunk) for chunk in chunks])                                 
-                
-        return LogMelPreprocessor(embedder_block)                                                     
+    name = config["preprocessor"]
 
-    elif name == "twfr":                                                                              
+    if name == "twfr":
         from gmm.features import load_log_mel
 
         class TWFRPreprocessor:                                                                       

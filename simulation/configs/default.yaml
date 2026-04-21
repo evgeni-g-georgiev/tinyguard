@@ -11,54 +11,27 @@
 # ─────────────────────────────────────────────────────────────────────────────
                                                                                       
 # ── Component selection ──────────────────────────────────────────────────────       
-preprocessor:    twfr        # log_mel | twfr | identity                           
-frozen_embedder: identity   # acoustic_encoder | identity                     
-separator:       gmm            # svdd | gmm | identity                              
+preprocessor:    twfr        # twfr | identity
+frozen_embedder: identity   # identity
+separator:       gmm            # gmm | identity
 topology:        isolated        # isolated | fully_connected                         
 merge:           none            # none | soft_param                                  
                                                                                       
-# ── Frozen embedder configs ──────────────────────────────────────────────────       
-# Each block is the full set of params needed for that embedder.                      
-# Audio params live here because they're tied to the embedder's training.             
-                                                                                      
-acoustic_encoder:                                                                     
-  checkpoint:    distillation/outputs/student/acoustic_encoder.pt                     
-  latent_dim:    32              # output dimension — propagates to separator         
-  sample_rate:   16000                                                                
-  frame_seconds: 0.975           # YAMNet's hardcoded frame size                      
-  n_mels:        64                                                                   
-  n_fft:         1024
-  hop_length:    256                                                                  
-  center:        true            # librosa padding mode
-                                                                                      
+# ── Frozen embedder configs ──────────────────────────────────────────────────
+# Each block is the full set of params needed for that embedder.
+
 identity_embedder:
   latent_dim:    128             # TWFR feature dim (for GMM pipeline)                
   sample_rate:   16000                                                                
   
-# ── Preprocessor configs ─────────────────────────────────────────────────────       
-# Inherit audio params from the active embedder block at runtime.
-# No params here unless preprocessor-specific.                                        
-                                                                                      
-log_mel: {}     # uses audio params from acoustic_encoder                             
-twfr:    {}     # uses audio params from identity_embedder                            
-                                                                                      
-# ── Separator configs ────────────────────────────────────────────────────────       
+# ── Preprocessor configs ─────────────────────────────────────────────────────
+# No params here unless preprocessor-specific.
+
+twfr: {}
+
+# ── Separator configs ────────────────────────────────────────────────────────
 # input_dim auto-set from the active embedder's latent_dim.
-                                                                                      
-svdd:           
-  hidden_dim:   32                                                                    
-  output_dim:   8
-  threshold_mode:       percentile    # percentile | max_margin | n_sigma
-  threshold_percentile: 95.0          # used when mode = percentile
-  threshold_margin:     0.0           # used when mode = max_margin (additive)
-  n_sigma:              3.0           # used when mode = n_sigma
-  holdout_fraction:     0.2 
-  lr:           0.01
-  weight_decay: 1.0e-4
-  epochs:       50                                                                    
-  batch_size:   32
-  seed:         42                                                                    
-                                                                                      
+
 gmm:
   n_components:   2                                                                   
   # covariance_type: diag

@@ -10,11 +10,9 @@ from pathlib import Path
 ROOT = Path(__file__).parent
 
 # ── Data ──────────────────────────────────────────────────────────────────────
-DATA_ARCHIVE_DIR = ROOT / "data/archives"
+DATA_ARCHIVE_DIR  = ROOT / "data/archives"
 MIMII_ARCHIVE_DIR = DATA_ARCHIVE_DIR / "mimii_archives"
-FSD50K_ARCHIVE_DIR = DATA_ARCHIVE_DIR / "fsd50k_archives"
 
-FSD50K_AUDIO  = ROOT / "data/fsd50k/FSD50K.eval_audio"
 MIMII_TMP_DIR = ROOT / "data/tmp/mimii"
 
 # ── MIMII dataset variants (three SNR levels) ─────────────────────────────────
@@ -29,56 +27,33 @@ MIMII_NEG6DB_SPLITS = ROOT / "preprocessing/outputs/mimii_splits/splits_neg6db.j
 MIMII_0DB_SPLITS    = ROOT / "preprocessing/outputs/mimii_splits/splits_0db.json"
 MIMII_6DB_SPLITS    = ROOT / "preprocessing/outputs/mimii_splits/splits_6db.json"
 
-# Backwards-compatibility aliases used by separator/ and inference/ pipelines.
+# Default SNR aliases used by data scripts and gmm/evaluate.py.
 MIMII_ROOT   = MIMII_NEG6DB_ROOT
 MIMII_SPLITS = MIMII_NEG6DB_SPLITS
 
 
-# ── External models ───────────────────────────────────────────────────────────
-YAMNET_PATH   = ROOT / "data/yamnet/yamnet.tflite"
-
 # ── Outputs ───────────────────────────────────────────────────────────────────
-FSDCACHE_DIR  = ROOT / "distillation/outputs/fsd50k_cache"
-PCA_DIR       = ROOT / "distillation/outputs/pca"
-STUDENT_DIR   = ROOT / "distillation/outputs/student"
-SEPARATOR_DIR = ROOT / "separator/outputs/separator"
-INFERENCE_DIR = ROOT / "inference/outputs/inference"
-
 # Per-dataset GMM output directories.
 GMM_NEG6DB_DIR = ROOT / "gmm/outputs/neg6db"
 GMM_0DB_DIR    = ROOT / "gmm/outputs/0db"
 GMM_6DB_DIR    = ROOT / "gmm/outputs/6db"
-GMM_DIR        = GMM_NEG6DB_DIR   # backwards-compat alias
+GMM_DIR        = GMM_NEG6DB_DIR   # default alias
 GMM_N_MELS     = 64    # 64 bins: better-regularised GMM at N=50 clips; full deployment path
 GMM_HOP_LENGTH = 512   # 50 % overlap of N_FFT=1024, per paper implementation
 
 # ── Audio constants ───────────────────────────────────────────────────────────
-SAMPLE_RATE  = 16_000
-FRAME_LEN    = 15_600   # 0.975 s at 16 kHz — must stay identical across all stages
-chunk_seconds = FRAME_LEN / SAMPLE_RATE
-N_FFT        = 1024
-HOP_LENGTH   = 256
-N_MELS       = 64
-LOG_OFFSET   = 1e-6
+SAMPLE_RATE     = 16_000
+N_FFT           = 1024
+LOG_OFFSET      = 1e-6
 MIMII_CLIP_SECS = 10
-
-# ── YAMNet dequantisation ─────────────────────────────────────────────────────
-EMB_IDX    = 115
-EMB_SCALE  = 0.022328350692987442
-EMB_ZP     = -128
-
-# ── PCA / distillation ────────────────────────────────────────────────────────
-PCA_DIMS   = 32
 
 # ── MIMII machine config ──────────────────────────────────────────────────────
 MACHINE_TYPES = ["fan", "pump", "slider", "valve"]
 MACHINE_IDS   = ["id_00", "id_02", "id_04", "id_06"]
 
-# ── SVDD / deployment simulation ──────────────────────────────────────────────
-TRAIN_CLIPS     = 60     # 10 min ÷ 10 s per clip
-MONITOR_CLIPS   = 30     # 5 min per monitoring window
-N_ROUNDS        = 3
-CLIP_SECS       = 10.0
-THRESHOLD_PCT   = 95
-SEED            = 42
-FS_EPOCHS       = 50     # fixed epoch count for on-device SVDD training
+# ── Simulation parameters ─────────────────────────────────────────────────────
+TRAIN_CLIPS   = 60     # 10 min ÷ 10 s per clip
+MONITOR_CLIPS = 30     # 5 min per monitoring window
+N_ROUNDS      = 3
+CLIP_SECS     = 10.0
+SEED          = 42
