@@ -64,6 +64,7 @@ from pathlib import Path
 
 import numpy as np
 import yaml
+from sklearn.metrics import roc_auc_score
 from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -211,14 +212,19 @@ def _round_summary(round_results: list[dict]) -> str:
 def _result_row(result: dict | None) -> dict:
     """Extract aggregate scalar metrics from an evaluate_machine result dict."""
     if result is None:
-        return {"detected": 0, "total": 0, "n_fp": 0, "n_norm": 0, "delays": []}
+        return {"detected": 0, "total": 0, "n_fp": 0, "n_norm": 0, "delays": [], "auc": None}
     rrs = result["round_results"]
+    events = result["events"]
+    scores = [e["score"] for e in events]
+    labels = [1 if e["phase"] == "anomaly" else 0 for e in events]
+    auc = roc_auc_score(labels, scores) if len(set(labels)) == 2 else None
     return {
         "detected": sum(1 for rr in rrs if rr["detected"]),
         "total":    len(rrs),
         "n_fp":     sum(rr["n_false_pos"] for rr in rrs),
         "n_norm":   sum(rr["n_normal_clips"] for rr in rrs),
         "delays":   [rr["detection_delay_secs"] for rr in rrs if rr["detected"]],
+        "auc":      auc,
     }
 
 
@@ -456,10 +462,12 @@ def main() -> None:
         fp     = sum(r["n_fp"]  for r in rows)
         norm   = sum(r["n_norm"] for r in rows)
         delays = [d for r in rows for d in r["delays"]]
+        aucs   = [r["auc"] for r in rows if r["auc"] is not None]
         return {
             "det_rate":   f"{det}/{total} ({100*det/total:.0f}%)" if total else "n/a",
             "fa_pct":     f"{100*fp/norm:.1f}%"                   if norm  else "n/a",
             "mean_delay": f"{np.mean(delays):.0f}s"               if delays else "n/a",
+            "mean_auc":   f"{np.mean(aucs):.4f}"                  if aucs  else "n/a",
         }
 
     rows_a = [v["node_a"]        for v in comparison.values()]
@@ -479,21 +487,21 @@ def main() -> None:
     lbl_b = _r_label(rows_b)
     lbl_f = _r_label(rows_f)
 
-    sep = "─" * 65
+    sep = "─" * 75
     print(sep)
-    print(f"  {'Variant':<26}  {'Detection':<14}  {'FA%':<8}  Mean delay")
+    print(f"  {'Variant':<26}  {'Detection':<14}  {'FA%':<8}  {'Mean delay':<12}  AUC")
     print(sep)
     print(
         f"  {f'Node A (r={lbl_a})':<26}  "
-        f"{agg_a['det_rate']:<14}  {agg_a['fa_pct']:<8}  {agg_a['mean_delay']}"
+        f"{agg_a['det_rate']:<14}  {agg_a['fa_pct']:<8}  {agg_a['mean_delay']:<12}  {agg_a['mean_auc']}"
     )
     print(
         f"  {f'Node B (r={lbl_b})':<26}  "
-        f"{agg_b['det_rate']:<14}  {agg_b['fa_pct']:<8}  {agg_b['mean_delay']}"
+        f"{agg_b['det_rate']:<14}  {agg_b['fa_pct']:<8}  {agg_b['mean_delay']:<12}  {agg_b['mean_auc']}"
     )
     print(
         f"  {f'NodeLearning ({lbl_f})':<26}  "
-        f"{agg_f['det_rate']:<14}  {agg_f['fa_pct']:<8}  {agg_f['mean_delay']}"
+        f"{agg_f['det_rate']:<14}  {agg_f['fa_pct']:<8}  {agg_f['mean_delay']:<12}  {agg_f['mean_auc']}"
     )
     print(sep)
     print(f"\nPlots   → {out_root}/{{node_a,node_b,node_learning}}/*.png")
