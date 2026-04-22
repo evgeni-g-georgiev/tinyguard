@@ -1,11 +1,22 @@
 """
-config.py — Single source of truth for all paths and constants.
+config.py — Paths, machine lists, and simulation bookkeeping.
 
-Every script in this repo imports from here. Paths are absolute (derived from
-__file__) so scripts can be run from any working directory.
+Audio and algorithm constants are defined in gmm/config.py (the deployment
+mirror) and imported here. To change any value that affects the GMM pipeline,
+edit gmm/config.py.
 """
 
 from pathlib import Path
+from gmm.config import (
+    SAMPLE_RATE,
+    N_FFT,
+    LOG_OFFSET,
+    HOP_LENGTH    as GMM_HOP_LENGTH,
+    N_MELS        as GMM_N_MELS,
+    CLIP_SECS     as MIMII_CLIP_SECS,
+    SEED,
+    N_TRAIN_CLIPS as TRAIN_CLIPS,
+)
 
 ROOT = Path(__file__).parent
 
@@ -31,29 +42,17 @@ MIMII_6DB_SPLITS    = ROOT / "preprocessing/outputs/mimii_splits/splits_6db.json
 MIMII_ROOT   = MIMII_NEG6DB_ROOT
 MIMII_SPLITS = MIMII_NEG6DB_SPLITS
 
-
-# ── Outputs ───────────────────────────────────────────────────────────────────
-# Per-dataset GMM output directories.
+# ── Output directories ────────────────────────────────────────────────────────
 GMM_NEG6DB_DIR = ROOT / "gmm/outputs/neg6db"
 GMM_0DB_DIR    = ROOT / "gmm/outputs/0db"
 GMM_6DB_DIR    = ROOT / "gmm/outputs/6db"
-GMM_DIR        = GMM_NEG6DB_DIR   # default alias
-GMM_N_MELS     = 64    # 64 bins: better-regularised GMM at N=50 clips; full deployment path
-GMM_HOP_LENGTH = 512   # 50 % overlap of N_FFT=1024, per paper implementation
-
-# ── Audio constants ───────────────────────────────────────────────────────────
-SAMPLE_RATE     = 16_000
-N_FFT           = 1024
-LOG_OFFSET      = 1e-6
-MIMII_CLIP_SECS = 10
+GMM_DIR        = GMM_NEG6DB_DIR
 
 # ── MIMII machine config ──────────────────────────────────────────────────────
 MACHINE_TYPES = ["fan", "pump", "slider", "valve"]
 MACHINE_IDS   = ["id_00", "id_02", "id_04", "id_06"]
 
 # ── Simulation parameters ─────────────────────────────────────────────────────
-TRAIN_CLIPS   = 60     # 10 min ÷ 10 s per clip
 MONITOR_CLIPS = 30     # 5 min per monitoring window
 N_ROUNDS      = 3
-CLIP_SECS     = 10.0
-SEED          = 42
+# SEED and TRAIN_CLIPS imported from gmm.config above.
