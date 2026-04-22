@@ -8,8 +8,9 @@ Runs three detector variants per machine and prints a side-by-side comparison:
                  This is the hardware baseline: the only mode runnable on a single
                  Arduino Nano 33 BLE without exceeding its 256 KB SRAM budget.
 
-  node_b       — Single node, r=NODE_R_B (=0.5, energy-weighted GWRP).
-                 Requires a second physical device (full spectrogram buffer needed).
+  node_b       — Single node, r=NODE_R_B (=0.0, max pooling — running max only).
+                 Also hardware-feasible (no sort buffer needed), but on a second device
+                 so Node A and Node B can operate with complementary r values.
 
   node_learning — Two-node NodeLearning system: both nodes train independently,
                   then exchange confidence signals (μ_val, σ_val) and fuse their
