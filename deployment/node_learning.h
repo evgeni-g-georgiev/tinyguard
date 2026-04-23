@@ -35,9 +35,9 @@ inline void nl_calibrate(
     const float* val_nlls_b, float mu_b, float sigma_b)
 {
     // Fit-quality softmax with temperature NL_TEMPERATURE.
-    // Lower mean val NLL → better GMM fit → higher weight.
-    float neg_mu_a = -mu_a / NL_TEMPERATURE;
-    float neg_mu_b = -mu_b / NL_TEMPERATURE;
+    // Lower val NLL std → more consistent node → higher weight.
+    float neg_mu_a = -sigma_a / NL_TEMPERATURE;
+    float neg_mu_b = -sigma_b / NL_TEMPERATURE;
     float mx = neg_mu_a > neg_mu_b ? neg_mu_a : neg_mu_b;
     float ea = expf(neg_mu_a - mx);
     float eb = expf(neg_mu_b - mx);
