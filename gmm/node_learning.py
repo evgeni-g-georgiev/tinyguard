@@ -15,9 +15,9 @@ computable as a running accumulator) is feasible on a single node.
 The Node Learning approach circumvents this by deploying *two* co-located
 physical nodes, each with a fixed r value:
 
-  Node A (r=1.0) — deployment-faithful mean pooling, mirrors hardware exactly.
-  Node B (r=0.5) — energy-weighted GWRP, captures high-energy transients that
-                   mean pooling dilutes (e.g. valve anomaly clicks).
+  Node A — mean pooling or GWRP, r selected by r-search.
+  Node B — complementary GWRP, r selected by diversity-constrained r-search
+            (|r_B − r_A| ≥ diversity_margin) to enforce functional complementarity.
 
 After each node trains its own GMM locally (no data exchange, no shared model),
 they share lightweight confidence signals — the mean and standard deviation of
@@ -40,9 +40,12 @@ This class concretely realises the following concepts from the paper:
 
   Context-weighted interaction (§3, eq. 5):
       θ_i^{t+1} ← M_i(θ_i^{t+1}, {ϕ_j^t}_{j∈N_i(t)}, c_i, c_j)
-    Fit-quality weights w_i = softmax(−μ_val_i) serve as the context signal
+    Fit-quality weights w_i = softmax(−μ_val_i / T) serve as the context signal
     ϕ_j: a node that fits normal data better (lower mean val NLL) is trusted
-    more at inference time.
+    more at inference time.  Temperature T (default 100) softens the weights
+    toward equal blending — at T=1 the softmax collapses to hard 0/1 selection
+    on most machines; at T=100 weights are near-equal (~0.49–0.55) with a small
+    bias toward the better-fitting node that is decisive on borderline detections.
 
   Functional complementarity (§2, Hossain et al.):
     Node A and Node B perceive different temporal structures of the same audio
@@ -129,6 +132,10 @@ class NodeLearning:
         CUSUM alarm height multiplier.  Default matches GMMDetector.
     cusum_h_floor : float
         Minimum cusum_h.  Default matches GMMDetector.
+    temperature : float
+        Softmax temperature for fit-quality weights: softmax(-μ_val / T).
+        T=1 → hard selection (collapses on most machines). T=100 (default) →
+        near-equal weights with a small bias toward the better-fitting node.
 
     Attributes (set after __init__)
     --------------------------------
@@ -148,6 +155,7 @@ class NodeLearning:
         threshold_pct: float = THRESHOLD_PCT,
         cusum_h_sigma: float = CUSUM_H_SIGMA,
         cusum_h_floor: float = CUSUM_H_FLOOR,
+        temperature:   float = 100.0,
     ) -> None:
         if detector_a.gmm_ is None or detector_b.gmm_ is None:
             raise RuntimeError("Both detectors must be fitted before NodeLearning.")
@@ -169,10 +177,11 @@ class NodeLearning:
         self.n_mels_      = detector_a.n_mels_
 
         # ── Fit-quality weights (paper §3, eq. 5 context-weighted interaction) ─
-        # w_i = softmax(−μ_val_i): a node whose GMM fits normal data better
-        # (lower mean val NLL) receives a higher weight.
+        # weights = softmax(-μ_val / T): lower mean val NLL → higher weight.
+        # Temperature T softens the distribution; default T=100 gives near-equal
+        # weights with a small bias toward the better-fitting node.
         mu_vals   = np.array([detector_a.mu_val_, detector_b.mu_val_], dtype=np.float64)
-        weights   = _softmax(-mu_vals)
+        weights   = _softmax(-mu_vals / temperature)
         self.w_a_ = float(weights[0])
         self.w_b_ = float(weights[1])
 

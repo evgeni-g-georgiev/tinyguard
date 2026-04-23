@@ -4,47 +4,43 @@ train.py — Train and compare TWFR-GMM detectors across all 16 MIMII machines.
 
 Runs three detector variants per machine and prints a side-by-side comparison:
 
-  node_a       — Single node, r=NODE_R_A (=1.0, deployment-faithful mean pooling).
-                 This is the hardware baseline: the only mode runnable on a single
-                 Arduino Nano 33 BLE without exceeding its 256 KB SRAM budget.
-
-  node_b       — Single node, r=NODE_R_B (=0.0, max pooling — running max only).
-                 Also hardware-feasible (no sort buffer needed), but on a second device
-                 so Node A and Node B can operate with complementary r values.
-
-  node_learning — Two-node NodeLearning system: both nodes train independently,
-                  then exchange confidence signals (μ_val, σ_val) and fuse their
-                  z-normalised anomaly scores with fit-quality weights.
-                  Implements the "collaborative learning" regime of the Node Learning
-                  paradigm (Kanjo & Aslanov, 2026, §2, Figure 2).
+  node_a        — Single node.  r selected by r-search over R_CANDIDATES.
+  node_b        — Single node.  r selected by diversity-constrained r-search:
+                  |r_B − r_A| ≥ diversity_margin enforces complementarity.
+  node_learning — Two-node system.  Nodes train independently, exchange confidence
+                  signals (μ_val, σ_val), then fuse z-normalised anomaly scores
+                  with temperature-scaled fit-quality weights
+                  w_i = softmax(−μ_val_i / T).  Implements the "collaborative
+                  learning" regime of the Node Learning paradigm
+                  (Kanjo & Aslanov, 2026, §2, Figure 2).
 
 Node Learning workflow (per machine)
 -------------------------------------
-  1. Load N_FIT_CLIPS normal clips.  Extract features at r=NODE_R_A for Node A
-     and r=NODE_R_B for Node B independently.
+  1. Load N_FIT_CLIPS normal clips.  Node A r-searches freely; Node B r-searches
+     over candidates with |r − r_A| ≥ diversity_margin.
   2. Each node fits its own 2-component diagonal GMM locally (eq. 1-2).
   3. Each node calibrates threshold and CUSUM from N_VAL_CLIPS held-out clips,
      storing (μ_val, σ_val) as confidence signals.
-  4. NodeLearning reads these signals, computes fit-quality weights
-     w_i = softmax(−μ_val_i), and calibrates a fused CUSUM on the weighted
-     z-score distribution (eq. 3, 5).
+  4. NodeLearning computes fit-quality weights w_i = softmax(−μ_val_i / T) and
+     calibrates a fused CUSUM on the weighted z-score distribution (eq. 3, 5).
   5. Evaluate all three variants on the same test set.
   6. Save artefacts, plots, and YAML summaries.
 
 Usage
 -----
-  python gmm/train.py                           # -6 dB dataset (default)
-  python gmm/train.py --dataset 0db             # 0 dB dataset
-  python gmm/train.py --dataset 6db             # +6 dB dataset
-  python gmm/train.py --verbose                 # print per-machine calibration
-  python gmm/train.py --dataset 0db --verbose
+  python gmm/train.py                                  # -6 dB dataset (default)
+  python gmm/train.py --dataset 0db                    # 0 dB dataset
+  python gmm/train.py --dataset 6db                    # +6 dB dataset
+  python gmm/train.py --temperature 1                  # hard softmax (ablation)
+  python gmm/train.py --diversity-margin 0             # no diversity constraint
+  python gmm/train.py --verbose                        # per-machine calibration
 
 Inputs
 ------
   preprocessing/outputs/mimii_splits/splits_{dataset}.json
   data/mimii_{dataset}/
 
-Outputs  (all overwrite on re-run — no stale files accumulate)
+Outputs  (overwrite on re-run — no stale files accumulate)
 -------
   gmm/outputs/{dataset}/node_a/
       {mtype}_{mid}.pkl    — fitted GMMDetector artefacts  (×16)
@@ -84,7 +80,7 @@ from config import (
 )
 from gmm.config import (
     N_FIT_CLIPS, N_MELS, N_TRAIN_CLIPS, N_VAL_CLIPS,
-    NODE_R_A, NODE_R_B, R_CANDIDATES,
+    R_CANDIDATES,
 )
 from gmm.detector import GMMDetector
 from gmm.evaluate import evaluate_machine
@@ -111,8 +107,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Train and compare TWFR-GMM detectors for all 16 MIMII machines.\n"
-            "Runs three variants: single-node r=NODE_R_A, single-node r=NODE_R_B,\n"
-            "and two-node NodeLearning (collaborative inference)."
+            "Runs three variants: single-node Node A (r-search), single-node Node B\n"
+            "(diversity-constrained r-search), and two-node NodeLearning."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -138,13 +134,23 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--r-search", action="store_true",
+        "--diversity-margin", type=float, default=0.25, metavar="DELTA",
         help=(
-            f"Enable per-node r-search over R_CANDIDATES={R_CANDIDATES}. "
-            "Each node independently selects the r that minimises its mean "
-            "validation NLL, mirroring the r-search in deployment/tinyml_gmm.ino. "
-            "Without this flag, Node A uses r=NODE_R_A and Node B uses r=NODE_R_B. "
-            "Outputs go to <dataset>_rsearch/ automatically."
+            f"Minimum |r_B − r_A| required when selecting Node B's r. "
+            "Enforces functional complementarity (paper §2, Hossain et al.): "
+            "without it both nodes converge to the same r on most machines and "
+            "fusion adds no value. Falls back to unconstrained search if no "
+            f"candidate satisfies the margin. Default: 0.25."
+        ),
+    )
+    parser.add_argument(
+        "--temperature", type=float, default=100.0, metavar="T",
+        help=(
+            "Softmax temperature for NodeLearning fit-quality weights: "
+            "w_i = softmax(-μ_val_i / T). "
+            "T=1 → hard selection (collapses on most machines). "
+            "T=100 (default) → near-equal weights with a small bias toward the "
+            "better-fitting node. T→∞ → exactly equal weights."
         ),
     )
     parser.add_argument(
@@ -184,28 +190,40 @@ def _fit_node(
     val_log_mels: list,
     r_candidates: list[float],
     n_mels: int,
+    exclude_r:        float | None = None,
+    diversity_margin: float        = 0.0,
 ) -> GMMDetector:
     """Fit a GMMDetector, selecting the best r from r_candidates.
 
     Single candidate → straightforward fixed-r fit (standard run).
     Multiple candidates → fit one detector per r, return the one with the
-    lowest mean validation NLL (best fit quality).  This mirrors the
-    r-search loop in deployment/tinyml_gmm.ino exactly: for each r,
-    fit the GMM, score the val clips, keep the best.
+    lowest mean validation NLL (best fit quality).
 
     Parameters
     ----------
-    fit_log_mels : list of np.ndarray, shape (n_mels, T)
-    val_log_mels : list of np.ndarray, shape (n_mels, T)
-    r_candidates : list of float   — GWRP decay values to evaluate
-    n_mels : int                   — must match the loaded spectrograms
+    fit_log_mels     : list of np.ndarray, shape (n_mels, T)
+    val_log_mels     : list of np.ndarray, shape (n_mels, T)
+    r_candidates     : list of float — GWRP decay values to evaluate
+    n_mels           : int — must match the loaded spectrograms
+    exclude_r        : float | None — if set, filter out candidates within
+                       diversity_margin of this value (used for Node B when
+                       diversity-constrained r-search is active).
+    diversity_margin : float — minimum |r - exclude_r| required to keep a
+                       candidate. Ignored when exclude_r is None.
 
     Returns
     -------
     GMMDetector — fitted and calibrated, with the best r selected.
     """
+    available = r_candidates
+    if exclude_r is not None and diversity_margin > 0.0:
+        diverse = [r for r in r_candidates if abs(r - exclude_r) >= diversity_margin]
+        if diverse:
+            available = diverse
+        # else: no candidate satisfies the margin — fall back to full search
+
     best: GMMDetector | None = None
-    for r in r_candidates:
+    for r in available:
         det = GMMDetector(r=r, n_mels=n_mels)
         det.fit(fit_log_mels, val_log_mels)
         if best is None or det.mu_val_ < best.mu_val_:
@@ -268,17 +286,10 @@ def main() -> None:
     splits_path = Path(args.splits)  if args.splits  else splits_default
     out_root    = Path(args.out_dir) if args.out_dir else out_default
 
-    # Auto-suffix output dir so different configurations never overwrite each
-    # other.  Explicit --out-dir always takes precedence over both suffixes.
-    if not args.out_dir:
-        if args.n_mels != N_MELS:
-            out_root = out_root.parent / f"{out_root.name}_{args.n_mels}mel"
-        if args.r_search:
-            out_root = out_root.parent / f"{out_root.name}_rsearch"
-
-    # Per-node r candidate lists — single-element list = fixed-r run.
-    r_cands_a = R_CANDIDATES if args.r_search else [NODE_R_A]
-    r_cands_b = R_CANDIDATES if args.r_search else [NODE_R_B]
+    # When --n-mels overrides the default, suffix the output dir so it never
+    # overwrites the standard 64-mel outputs.
+    if not args.out_dir and args.n_mels != N_MELS:
+        out_root = out_root.parent / f"{out_root.name}_{args.n_mels}mel"
 
     if not splits_path.exists():
         print(f"ERROR: Splits manifest not found at {splits_path}")
@@ -298,17 +309,12 @@ def main() -> None:
     with open(splits_path) as f:
         splits = json.load(f)
 
-    if args.r_search:
-        node_a_desc = f"mic{args.mic_a}  r-search over {r_cands_a}"
-        node_b_desc = f"mic{args.mic_b}  r-search over {r_cands_b}"
-    else:
-        node_a_desc = f"mic{args.mic_a}  r={NODE_R_A}"
-        node_b_desc = f"mic{args.mic_b}  r={NODE_R_B}"
-
+    div_desc = f"diversity ≥ {args.diversity_margin:g}" if args.diversity_margin > 0 else "unconstrained"
     print(
         f"TWFR-GMM Node Learning comparison  [{args.dataset}]\n"
-        f"  Node A: {node_a_desc}\n"
-        f"  Node B: {node_b_desc}\n"
+        f"  Node A:  mic{args.mic_a}  r-search over {R_CANDIDATES}\n"
+        f"  Node B:  mic{args.mic_b}  r-search over {R_CANDIDATES}  ({div_desc})\n"
+        f"  Fusion:  softmax(-μ_val / T={args.temperature:g})\n"
         f"  n_mels={args.n_mels}  fit clips={N_FIT_CLIPS}  val clips={N_VAL_CLIPS}\n"
         f"  outputs → {out_root}\n"
     )
@@ -355,12 +361,16 @@ def main() -> None:
                 continue
 
             # ── Step 1: Fit Node A ────────────────────────────────────────────
-            det_a = _fit_node(fit_log_mels_a, val_log_mels_a, r_cands_a, args.n_mels)
+            det_a = _fit_node(fit_log_mels_a, val_log_mels_a, R_CANDIDATES, args.n_mels)
             det_a.channel_ = args.mic_a
             det_a.save(dir_node_a / f"{mtype}_{mid}.pkl")
 
-            # ── Step 2: Fit Node B ────────────────────────────────────────────
-            det_b = _fit_node(fit_log_mels_b, val_log_mels_b, r_cands_b, args.n_mels)
+            # ── Step 2: Fit Node B (diversity-constrained) ────────────────────
+            det_b = _fit_node(
+                fit_log_mels_b, val_log_mels_b, R_CANDIDATES, args.n_mels,
+                exclude_r=det_a.r_,
+                diversity_margin=args.diversity_margin,
+            )
             det_b.channel_ = args.mic_b
             det_b.save(dir_node_b / f"{mtype}_{mid}.pkl")
 
@@ -368,7 +378,10 @@ def main() -> None:
             # Nodes exchange confidence signals (μ_val, σ_val) and calibrate
             # a fused CUSUM.  Paper eq. 3 (merge operator) and eq. 5
             # (context-weighted interaction).
-            node_learning = NodeLearning(det_a, det_b)
+            node_learning = NodeLearning(
+                det_a, det_b,
+                temperature=args.temperature,
+            )
             node_learning.channel_a_ = args.mic_a
             node_learning.channel_b_ = args.mic_b
 
