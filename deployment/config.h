@@ -7,9 +7,9 @@
 #define NODE_B  1
 #define NODE_ID NODE_A   // ← change to NODE_B when flashing the second chip
 
-// ── Node r values (TWFR pooling) ──────────────────────────────────────
-#define NODE_R_A 1.0f    // mean pooling — streaming sum, no buffer needed
-#define NODE_R_B 0.0f    // max pooling  — streaming max, no buffer needed
+// ── Node r default (used as chosen_r before r-search runs) ───────────
+#define NODE_R_A 1.0f    // Node A default (mean pooling)
+#define NODE_R_B 0.0f    // Node B default (max pooling)
 
 #if NODE_ID == NODE_A
   static const float R_NODE = NODE_R_A;
@@ -31,9 +31,9 @@
 #define CLIP_SECS       10
 
 // ── Training split ────────────────────────────────────────────────────
-#define N_TRAIN_CLIPS   2
-#define N_FIT_CLIPS     1      // GMM is fitted on these
-#define N_VAL_CLIPS     1      // threshold is calibrated on these
+#define N_TRAIN_CLIPS   60
+#define N_FIT_CLIPS     50     // GMM is fitted on these
+#define N_VAL_CLIPS     10     // threshold is calibrated on these
 
 // ── GMM ───────────────────────────────────────────────────────────────
 #define N_COMPONENTS    2
@@ -48,7 +48,9 @@
 #define CUSUM_H_FLOOR   1.0f   // minimum cusum_h (degenerate val set guard)
 
 // ── Node Learning ─────────────────────────────────────────────────────
-#define SIGMA_FLOOR     1e-8f  // guards z-score division by sigma_val
+#define SIGMA_FLOOR     1e-8f   // guards z-score division by sigma_val
+#define NL_TEMPERATURE  100.0f  // softmax temperature; matches Python NodeLearning(temperature=100)
+#define N_R_CANDIDATES  5       // r-search grid: {0.0, 0.25, 0.5, 0.75, 1.0}
 
 // ── BLE ───────────────────────────────────────────────────────────────
 #define ENABLE_BLE      1

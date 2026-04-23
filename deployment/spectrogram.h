@@ -10,28 +10,22 @@ static float audio_buf[N_FFT] = {0};
 static float vReal[N_FFT];
 static float vImag[N_FFT];
 
-// Online accumulator — no full spectrogram buffer needed for either node.
-//   Node A (r=1.0): running sum → divide by frame_count → mean pooling.
-//   Node B (r=0.0): running max → copy directly          → max pooling.
-// Both are streaming accumulators; neither requires N_MELS × N_FRAMES storage.
-static float mel_accumulator[N_MELS];
-static int   frame_count = 0;
+// Full per-clip mel spectrogram buffer — written hop by hop, read by features.h.
+// Layout [N_MELS][N_FRAMES]: mel_buf[m][t] = log-mel energy for bin m at frame t.
+// 64 × 312 × 4 = 78 KB.  Supports all r values (0, 0.25, 0.5, 0.75, 1.0).
+static float mel_buf[N_MELS][N_FRAMES];
+static int   mel_frame_idx = 0;
 
 static ArduinoFFT<float> FFT(vReal, vImag, N_FFT, (float)SAMPLE_RATE);
 
 inline void spectrogram_reset() {
     memset(audio_buf, 0, sizeof(audio_buf));
-#if NODE_ID == NODE_B
-    for (int m = 0; m < N_MELS; m++) mel_accumulator[m] = -1e30f; // running max init
-#else
-    memset(mel_accumulator, 0, sizeof(mel_accumulator));           // running sum init
-#endif
-    frame_count = 0;
+    mel_frame_idx = 0;
 }
 
-// Process one hop of audio. Returns true when the clip is complete.
+// Process one hop of audio. Returns true when the clip is complete (mel_frame_idx == N_FRAMES).
 inline bool spectrogram_process_hop(const int16_t* raw) {
-    if (frame_count >= N_FRAMES) return true;
+    if (mel_frame_idx >= N_FRAMES) return true;
 
     // Slide overlap buffer left, append new samples.
     memmove(audio_buf, audio_buf + HOP_LENGTH, HOP_LENGTH * sizeof(float));
@@ -48,33 +42,14 @@ inline bool spectrogram_process_hop(const int16_t* raw) {
     for (int b = 0; b <= N_FFT / 2; b++)
         vReal[b] = vReal[b] * vReal[b] + vImag[b] * vImag[b];
 
-    // Mel filterbank + log → update accumulator.
+    // Mel filterbank + log → store frame in mel_buf.
     for (int m = 0; m < N_MELS; m++) {
         float mel_val = 0.0f;
         for (int b = 0; b <= N_FFT / 2; b++)
             mel_val += MEL_FB[m][b] * vReal[b];
-        float log_mel = logf(mel_val + LOG_OFFSET);
-#if NODE_ID == NODE_B
-        mel_accumulator[m] = fmaxf(mel_accumulator[m], log_mel); // running max
-#else
-        mel_accumulator[m] += log_mel;                            // running sum
-#endif
+        mel_buf[m][mel_frame_idx] = logf(mel_val + LOG_OFFSET);
     }
 
-    frame_count++;
-    return (frame_count >= N_FRAMES);
-}
-
-// Call once after spectrogram_process_hop returns true.
-// Node A: returns per-bin mean (sum / frame_count).
-// Node B: returns per-bin max (already in accumulator).
-inline void spectrogram_get_feature(float* feature_out) {
-#if NODE_ID == NODE_B
-    for (int m = 0; m < N_MELS; m++)
-        feature_out[m] = mel_accumulator[m];
-#else
-    float inv = 1.0f / frame_count;
-    for (int m = 0; m < N_MELS; m++)
-        feature_out[m] = mel_accumulator[m] * inv;
-#endif
+    mel_frame_idx++;
+    return (mel_frame_idx >= N_FRAMES);
 }
