@@ -154,6 +154,16 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--weight-by",
+        choices=["mu", "sigma"],
+        default="sigma",
+        help=(
+            "Confidence signal used for NodeLearning fusion weights. "
+            "'mu' (default): softmax(-μ_val / T) — lower mean val NLL → higher weight. "
+            "'sigma': softmax(-σ_val) — lower val NLL std → higher weight (no temperature)."
+        ),
+    )
+    parser.add_argument(
         "--mic-a", type=int, default=0, metavar="N",
         help=(
             "Microphone channel index for Node A (0-7, default: 0). "
@@ -309,12 +319,17 @@ def main() -> None:
     with open(splits_path) as f:
         splits = json.load(f)
 
-    div_desc = f"diversity ≥ {args.diversity_margin:g}" if args.diversity_margin > 0 else "unconstrained"
+    div_desc    = f"diversity ≥ {args.diversity_margin:g}" if args.diversity_margin > 0 else "unconstrained"
+    fusion_desc = (
+        f"softmax(-σ_val / T={args.temperature:g})"
+        if args.weight_by == "sigma"
+        else f"softmax(-μ_val / T={args.temperature:g})"
+    )
     print(
         f"TWFR-GMM Node Learning comparison  [{args.dataset}]\n"
         f"  Node A:  mic{args.mic_a}  r-search over {R_CANDIDATES}\n"
         f"  Node B:  mic{args.mic_b}  r-search over {R_CANDIDATES}  ({div_desc})\n"
-        f"  Fusion:  softmax(-μ_val / T={args.temperature:g})\n"
+        f"  Fusion:  {fusion_desc}\n"
         f"  n_mels={args.n_mels}  fit clips={N_FIT_CLIPS}  val clips={N_VAL_CLIPS}\n"
         f"  outputs → {out_root}\n"
     )
@@ -381,6 +396,7 @@ def main() -> None:
             node_learning = NodeLearning(
                 det_a, det_b,
                 temperature=args.temperature,
+                weight_by=args.weight_by,
             )
             node_learning.channel_a_ = args.mic_a
             node_learning.channel_b_ = args.mic_b
@@ -390,13 +406,13 @@ def main() -> None:
                     f"    Node A (r={det_a.r_}): "
                     f"thr={det_a.threshold_:.4f}  "
                     f"cusum_h={det_a.cusum_h_:.4f}  "
-                    f"μ_val={det_a.mu_val_:.4f}"
+                    f"μ_val={det_a.mu_val_:.4f}  σ_val={det_a.sigma_val_:.4f}"
                 )
                 print(
                     f"    Node B (r={det_b.r_}): "
                     f"thr={det_b.threshold_:.4f}  "
                     f"cusum_h={det_b.cusum_h_:.4f}  "
-                    f"μ_val={det_b.mu_val_:.4f}"
+                    f"μ_val={det_b.mu_val_:.4f}  σ_val={det_b.sigma_val_:.4f}"
                 )
                 print(
                     f"    NodeLearning: "
