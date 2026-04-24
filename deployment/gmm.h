@@ -1,4 +1,4 @@
-// gmm.h
+// Diagonal-covariance GMM fit by EM. score_clip returns -max_k log N(x|mu_k, Sigma_k).
 #pragma once
 #include <math.h>
 #include <stdlib.h>
@@ -6,18 +6,15 @@
 #include <algorithm>
 #include "config.h"
 
-// ── Trained GMM parameters (written by fit_gmm, read by score_clip) ──────────
-static float gm_mu    [N_COMPONENTS][N_MELS];   // means
-static float gm_sigma2[N_COMPONENTS][N_MELS];   // diagonal variances
-static float gm_pi    [N_COMPONENTS];            // mixing weights
-static float gm_lognorm[N_COMPONENTS];           // precomputed log-normalizer
+static float gm_mu      [N_COMPONENTS][N_MELS];
+static float gm_sigma2  [N_COMPONENTS][N_MELS];
+static float gm_pi      [N_COMPONENTS];
+static float gm_lognorm [N_COMPONENTS];
 
-// Responsibilities (only needed during EM — reused scratch space).
+// Responsibilities reused across EM iterations.
 static float resp[N_FIT_CLIPS][N_COMPONENTS];
 
-// log N(x|mu_k, sigma2_k) = lognorm[k] - 0.5 * quad(x, k)
-// lognorm[k] = -0.5 * [ D*log(2π) + Σ_d log(sigma2_k[d]) ]
-static const float LOG2PI = 1.8378770664f;   // log(2π)
+static const float LOG2PI = 1.8378770664f;
 
 static void update_lognorm() {
     for (int k = 0; k < N_COMPONENTS; k++) {
@@ -27,7 +24,7 @@ static void update_lognorm() {
     }
 }
 
-// -0.5 * Σ_d (x[d] - mu_k[d])² / sigma2_k[d]
+// -0.5 * sum_d (x[d] - mu_k[d])^2 / sigma2_k[d]
 static float quad(const float* x, int k) {
     float q = 0.0f;
     for (int d = 0; d < N_MELS; d++) {
@@ -40,14 +37,12 @@ static float quad(const float* x, int k) {
 static void gmm_init(float X[][N_MELS], int N, uint32_t seed) {
     srand(seed);
 
-    // Pick two distinct random samples as initial means.
     int i0 = rand() % N;
     int i1;
     do { i1 = rand() % N; } while (i1 == i0);
     memcpy(gm_mu[0], X[i0], N_MELS * sizeof(float));
     memcpy(gm_mu[1], X[i1], N_MELS * sizeof(float));
 
-    // Global variance per dimension as initial sigma2 (same for both components).
     float mean_d[N_MELS] = {0};
     for (int n = 0; n < N; n++)
         for (int d = 0; d < N_MELS; d++)
@@ -70,12 +65,10 @@ static void gmm_init(float X[][N_MELS], int N, uint32_t seed) {
 
 static void e_step(float X[][N_MELS], int N) {
     for (int n = 0; n < N; n++) {
-        // Log unnormalised responsibility for each component.
         float lp[N_COMPONENTS];
         for (int k = 0; k < N_COMPONENTS; k++)
             lp[k] = logf(gm_pi[k]) + gm_lognorm[k] + quad(X[n], k);
 
-        // Log-sum-exp normalisation (numerically stable).
         float mx = lp[0];
         for (int k = 1; k < N_COMPONENTS; k++) if (lp[k] > mx) mx = lp[k];
         float sum_exp = 0.0f;
@@ -92,7 +85,7 @@ static void m_step(float X[][N_MELS], int N) {
         float Nk = 0.0f;
         for (int n = 0; n < N; n++) Nk += resp[n][k];
 
-        // Guard: if the component has collapsed, reinitialise it.
+        // Reinitialise collapsed component from a random sample.
         if (Nk < MIN_NK_FRAC * N) {
             int idx = rand() % N;
             memcpy(gm_mu[k], X[idx], N_MELS * sizeof(float));
@@ -101,14 +94,12 @@ static void m_step(float X[][N_MELS], int N) {
             continue;
         }
 
-        // Update means.
         for (int d = 0; d < N_MELS; d++) {
             float s = 0.0f;
             for (int n = 0; n < N; n++) s += resp[n][k] * X[n][d];
             gm_mu[k][d] = s / Nk;
         }
 
-        // Update diagonal variances (with floor).
         for (int d = 0; d < N_MELS; d++) {
             float s = 0.0f;
             for (int n = 0; n < N; n++) {
@@ -122,7 +113,6 @@ static void m_step(float X[][N_MELS], int N) {
     }
 }
 
-// X is features[r_idx][0..N_FIT_CLIPS-1] — pass as (float(*)[N_MELS]).
 inline void fit_gmm(float X[][N_MELS], int N, uint32_t seed) {
     gmm_init(X, N, seed);
 
@@ -132,7 +122,6 @@ inline void fit_gmm(float X[][N_MELS], int N, uint32_t seed) {
         m_step(X, N);
         update_lognorm();
 
-        // Mean log-likelihood over training set.
         float ll = 0.0f;
         for (int n = 0; n < N; n++) {
             float lp[N_COMPONENTS];
@@ -154,8 +143,7 @@ inline void fit_gmm(float X[][N_MELS], int N, uint32_t seed) {
     }
 }
 
-// score = -max_k log N(x | mu_k, sigma2_k)
-// Higher score → more anomalous.
+// Anomaly score; higher = more anomalous.
 inline float score_clip(const float* feature) {
     float best = -1e30f;
     for (int k = 0; k < N_COMPONENTS; k++) {

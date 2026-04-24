@@ -1,9 +1,9 @@
-// audio.h
+// PDM microphone capture. One hop of HOP_LENGTH samples per ISR.
 #pragma once
 #include <PDM.h>
 #include "config.h"
 
-static int16_t  pdm_buf[HOP_LENGTH];
+static int16_t       pdm_buf[HOP_LENGTH];
 static volatile bool hop_ready = false;
 
 static void _on_pdm_data() {
@@ -21,6 +21,7 @@ inline void audio_begin() {
     }
 }
 
+// Consume the hop-ready flag. Returns true once per completed hop.
 inline bool audio_read_hop() {
     if (!hop_ready) return false;
     hop_ready = false;

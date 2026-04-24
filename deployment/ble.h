@@ -1,18 +1,10 @@
-// ble.h — BLE communication between Node A (peripheral) and Node B (central).
+// BLE link between Node A (peripheral) and Node B (central).
 //
-// All four GATT characteristics are hosted on Node A's peripheral server.
-// Node B (central) reads/writes to Node A's characteristics in both directions.
-//
-// Characteristic layout (all on Node A's GATT server):
-//   NL_VALDATA_A  : BLERead         — Node A's val stats + val NLLs (B reads in SYNC)
-//   NL_NLLSCORE_A : BLERead|Notify  — Node A's per-clip NLL (B subscribes in MONITOR)
-//   NL_VALDATA_B  : BLEWrite        — Node B writes its val stats + val NLLs (A reads in SYNC)
-//   NL_NLLSCORE_B : BLEWrite        — Node B writes its per-clip NLL (A reads in MONITOR)
-//
-// ValDataPacket: mu_val + sigma_val + val_nlls[N_VAL_CLIPS]
-//   = 8 + 4*N_VAL_CLIPS bytes = 48 bytes at N_VAL_CLIPS=10.
-//   ArduinoBLE handles multi-packet reads transparently.
-// NLL score packet: 4 bytes (one float).
+// All four characteristics live on Node A's GATT server:
+//   NL_VALDATA_A   BLERead          Node A's val-data packet
+//   NL_NLLSCORE_A  BLERead | Notify Node A's per-clip NLL
+//   NL_VALDATA_B   BLEWrite         Node B's val-data packet
+//   NL_NLLSCORE_B  BLEWrite         Node B's per-clip NLL
 #pragma once
 #include <ArduinoBLE.h>
 #include <string.h>
@@ -28,10 +20,10 @@ struct ValDataPacket {
     float mu_val;
     float sigma_val;
     float val_nlls[N_VAL_CLIPS];
-    float chosen_r;   // r selected by this node's r-search; used for diversity constraint
+    float chosen_r;
 };
 
-// ── Node A: BLE Peripheral ────────────────────────────────────────────────────
+// ── Node A: peripheral ───────────────────────────────────────────────────────
 #if NODE_ID == NODE_A
 
 static BLEService        nl_service(NL_SERVICE_UUID);
@@ -56,7 +48,6 @@ inline void ble_begin() {
     Serial.println("[BLE] Node A advertising.");
 }
 
-// Publish our val stats so Node B can read them during SYNC.
 inline void ble_publish_val_data(float mu_val, float sigma_val, const float* val_nlls, float r) {
     ValDataPacket pkt;
     pkt.mu_val    = mu_val;
@@ -67,13 +58,11 @@ inline void ble_publish_val_data(float mu_val, float sigma_val, const float* val
     Serial.println("[BLE] Val data published.");
 }
 
-// Notify Node B of this clip's NLL score.
 inline void ble_send_nll(float nll) {
     nl_nlla_char.writeValue((const uint8_t*)&nll, sizeof(float));
 }
 
-// Poll BLE; if Node B wrote its val stats, copy them into *out and return true.
-// Edge-triggered: returns true at most once per write event.
+// Returns true at most once per write event.
 inline bool ble_read_val_data_b(ValDataPacket* out) {
     BLE.poll();
     if (!nl_valdata_b_char.written()) return false;
@@ -83,7 +72,6 @@ inline bool ble_read_val_data_b(ValDataPacket* out) {
     return true;
 }
 
-// Poll BLE; if Node B wrote its NLL, update ble_last_nll_b and set ble_nll_b_fresh.
 inline void ble_poll_nll_b() {
     BLE.poll();
     if (nl_nllb_char.written()) {
@@ -94,7 +82,7 @@ inline void ble_poll_nll_b() {
 
 inline bool ble_is_connected() { BLE.poll(); return BLE.connected(); }
 
-// ── Node B: BLE Central ───────────────────────────────────────────────────────
+// ── Node B: central ──────────────────────────────────────────────────────────
 #else
 
 static BLEDevice         nl_peripheral;
@@ -110,8 +98,7 @@ inline void ble_begin() {
     Serial.println("[BLE] Node B ready.");
 }
 
-// Scan for Node A; connect and discover all four characteristics.
-// Returns true on success; false on 30-second timeout.
+// Scan for 30 s, connect, discover characteristics, subscribe to A's NLL notifications.
 inline bool ble_connect() {
     BLE.scanForName("TinyML-NodeA");
     unsigned long t0 = millis();
@@ -136,7 +123,6 @@ inline bool ble_connect() {
     return false;
 }
 
-// Read Node A's val-data packet. Call once after ble_connect() in SYNC.
 inline bool ble_read_val_data(ValDataPacket* out) {
     if (!nl_valdata_a_remote) return false;
     uint8_t buf[sizeof(ValDataPacket)];
@@ -146,13 +132,11 @@ inline bool ble_read_val_data(ValDataPacket* out) {
     return true;
 }
 
-// Write our val-data packet to Node A's NL_VALDATA_B characteristic.
 inline bool ble_write_val_data(const ValDataPacket* pkt) {
     if (!nl_valdata_b_remote) return false;
     return nl_valdata_b_remote.writeValue((const uint8_t*)pkt, sizeof(ValDataPacket));
 }
 
-// Poll BLE notifications from Node A. Sets ble_nll_fresh=true when Node A sends a score.
 inline void ble_poll() {
     if (!nl_peripheral.connected()) return;
     BLE.poll();
@@ -164,7 +148,6 @@ inline void ble_poll() {
     }
 }
 
-// Write our per-clip NLL to Node A's NL_NLLSCORE_B characteristic.
 inline void ble_send_nll_b(float nll) {
     if (!nl_peripheral.connected()) return;
     nl_nllb_remote.writeValue((const uint8_t*)&nll, sizeof(float));
@@ -172,4 +155,4 @@ inline void ble_send_nll_b(float nll) {
 
 inline bool ble_is_connected() { return nl_peripheral.connected(); }
 
-#endif // NODE_ID
+#endif
