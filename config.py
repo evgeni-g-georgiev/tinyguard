@@ -28,20 +28,18 @@ MIMII_NEG6DB_SPLITS = ROOT / "preprocessing/outputs/mimii_splits/splits_neg6db.j
 MIMII_0DB_SPLITS    = ROOT / "preprocessing/outputs/mimii_splits/splits_0db.json"
 MIMII_6DB_SPLITS    = ROOT / "preprocessing/outputs/mimii_splits/splits_6db.json"
 
-# Default aliases used by gmm/evaluate.py when no root is passed explicitly.
+# Default aliases (legacy; once consumed by the now-deleted gmm/evaluate.py
+# round-based pipeline). Kept for downstream scripts that still import them.
 MIMII_ROOT   = MIMII_NEG6DB_ROOT
 MIMII_SPLITS = MIMII_NEG6DB_SPLITS
-
-# ── Output directories ───────────────────────────────────────────────────────
-GMM_NEG6DB_DIR = ROOT / "gmm/outputs/neg6db"
-GMM_0DB_DIR    = ROOT / "gmm/outputs/0db"
-GMM_6DB_DIR    = ROOT / "gmm/outputs/6db"
-GMM_DIR        = GMM_NEG6DB_DIR
 
 # ── MIMII machine config ─────────────────────────────────────────────────────
 MACHINE_TYPES = ["fan", "pump", "slider", "valve"]
 MACHINE_IDS   = ["id_00", "id_02", "id_04", "id_06"]
 
 # ── Split sizing ─────────────────────────────────────────────────────────────
+# Used by preprocessing/split_mimii.py to build the JSON manifests for the
+# legacy round-based pipeline. The simulation in simulation/ uses its own
+# directory-based splits via simulation/data/split_data.py.
 MONITOR_CLIPS = 30   # clips per monitoring window (5 min at 10 s/clip)
 N_ROUNDS      = 3

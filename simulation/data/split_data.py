@@ -1,27 +1,30 @@
 """Split MIMII dataset into warmup / test_normal / test_abnormal per machine.
-                                                                                    
-Reads from the already-extracted MIMII directory structure:                           
-    data/mimii/{machine_type}/{machine_id}/{normal,abnormal}/*.wav                    
-                                                                                    
-Produces:                                                                             
-    simulation/data/splits/{machine_type}/{machine_id}/warmup/*.wav
-    simulation/data/splits/{machine_type}/{machine_id}/test_normal/*.wav              
-    simulation/data/splits/{machine_type}/{machine_id}/test_abnormal/*.wav
-    simulation/data/splits/surplus_abnormal/{machine_type}/{machine_id}/*.wav         
-                                                                                    
-Key properties:                                                                       
-    - Every .wav ends up in exactly one bucket (partition property).                  
-    - test_normal count = test_abnormal count = min_abnormal across all nodes.        
-    - warmup count = min leftover normals across all nodes (simulation loader         
-    truncates to the configured warmup_count hyperparameter at runtime).            
-    - Equal timeline lengths guaranteed across all nodes.                             
-                                                                                    
-The pipeline separates planning from execution so the split logic can be              
-tested without touching the filesystem.
-                                                                                    
-Usage:          
-    python -m simulation.data.split_data [--mimii-root data/mimii]                    
-                                        [--splits-dir simulation/data/splits]        
+
+Reads from the already-extracted MIMII directory structure produced by
+``data/download_mimii.py``:
+    data/mimii_{snr}/{machine_type}/{machine_id}/{normal,abnormal}/*.wav
+
+Produces (under ``simulation/data/splits/{snr}/``):
+    {machine_type}/{machine_id}/warmup/*.wav
+    {machine_type}/{machine_id}/test_normal/*.wav
+    {machine_type}/{machine_id}/test_abnormal/*.wav
+    surplus_abnormal/{machine_type}/{machine_id}/*.wav
+
+Key properties:
+    - Every .wav ends up in exactly one bucket (partition property).
+    - test_normal count = test_abnormal count = min_abnormal across all nodes.
+    - warmup count = min leftover normals across all nodes (simulation loader
+      truncates to the configured warmup_count hyperparameter at runtime).
+    - Equal timeline lengths guaranteed across all nodes.
+
+The pipeline separates planning from execution so the split logic can be
+tested without touching the filesystem. Files are placed via symlinks rather
+than copies so the splits are cheap to (re)create.
+
+Usage (typically called automatically from simulation/run_simulation.py;
+this CLI is an escape hatch):
+    python -m simulation.data.split_data --snr 6dB \\
+        --mimii-root data/mimii_6db --splits-dir simulation/data/splits/6dB
 """
 
 from dataclasses import dataclass
@@ -183,14 +186,14 @@ def discover_sources(
     mimii_root: Path,
     machine_types: list[str],
 ) -> list[NodeSources]:
-    """Walk the MIMII directory and build a manifest per node.                        
+    """Walk the MIMII directory and build a manifest per node.
 
-    Expects the structure produced by data/download_mimii.py:                         
-        data/mimii/{machine_type}/{machine_id}/{normal,abnormal}/*.wav
-                                                                                    
-    Raises:                                                                           
+    Expects the structure produced by data/download_mimii.py:
+        data/mimii_{snr}/{machine_type}/{machine_id}/{normal,abnormal}/*.wav
+
+    Raises:
         FileNotFoundError: If mimii_root or a machine_type dir doesn't exist.
-    """                                                                               
+    """                                                                              
     if not mimii_root.exists():
         raise FileNotFoundError(f"MIMII root not found: {mimii_root}")                
 

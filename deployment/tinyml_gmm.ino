@@ -153,23 +153,21 @@ void loop() {
         Serial.println("SYNC — connecting to Node A (30 s)...");
         if (ble_connect()) {
             if (ble_read_val_data(&partner_pkt)) {
-                // Diversity constraint: |r_B - r_A| >= 0.25. If violated, pick the
-                // best constrained candidate from candidate_mu and re-train from
-                // the features still in SRAM.
+                // Greedy diversity: if Node B picked the same r as Node A, switch
+                // to the best other candidate. Matches simulation/'s rule. With
+                // N_R_CANDIDATES=4 and 2 nodes, a valid alternative always exists.
                 {
                     float r_a = partner_pkt.chosen_r;
-                    if (fabsf(chosen_r - r_a) < 0.25f) {
+                    if (chosen_r == r_a) {
                         float best_div_mu  = 1e30f;
                         int   best_div_idx = -1;
                         for (int i = 0; i < N_R_CANDIDATES; i++) {
-                            if (fabsf(R_CANDIDATES[i] - r_a) >= 0.25f &&
-                                candidate_mu[i] < best_div_mu) {
+                            if (R_CANDIDATES[i] != r_a && candidate_mu[i] < best_div_mu) {
                                 best_div_mu  = candidate_mu[i];
                                 best_div_idx = i;
                             }
                         }
-                        if (best_div_idx >= 0 &&
-                            fabsf(R_CANDIDATES[best_div_idx] - chosen_r) > 1e-3f) {
+                        if (best_div_idx >= 0) {
                             Serial.print("  [diversity] r_A="); Serial.print(r_a, 2);
                             Serial.print("  r_B "); Serial.print(chosen_r, 2);
                             chosen_r = R_CANDIDATES[best_div_idx];

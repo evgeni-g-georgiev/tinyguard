@@ -23,70 +23,91 @@ from simulation.reporting               import (
 )                                                                                                                               
                                                                                                                                 
                                                                                                                                 
-VALID_SNRS = ("6dB", "0dB", "-6dB")                                                                                             
-                                                                                                                                
-                                                                                                                                
+VALID_SNRS = ("6dB", "0dB", "-6dB")
+
+# Maps display SNR ("-6dB") to on-disk mimii dir suffix ("neg6db"). The splits
+# dir keeps the display form (e.g. simulation/data/splits/-6dB/).
+_MIMII_SNR_DIR = {"-6dB": "neg6db", "0dB": "0db", "6dB": "6db"}
+
+
 # ── Config resolution ────────────────────────────────────────────────────
-                                                                                                                                
+
 def _resolve_snr(config: dict) -> str:
     """Validate snr and expand {snr} placeholders in data paths."""
-    snr = config.get("snr")                                                                                                     
+    snr = config.get("snr")
     if snr not in VALID_SNRS:
-        raise ValueError(f"snr must be one of {VALID_SNRS}, got {snr!r}")                                                       
+        raise ValueError(f"snr must be one of {VALID_SNRS}, got {snr!r}")
     data = config["data"]
-    data["mimii_root"] = data["mimii_root"].format(snr=snr)                                                                     
+    data["mimii_root"] = data["mimii_root"].format(snr=_MIMII_SNR_DIR[snr])
     data["splits_dir"] = data["splits_dir"].format(snr=snr)
-    return snr                                                                                                                  
+    return snr
+
+
+def _resolve_channels(config: dict) -> list[int]:
+    """Read explicit `channels` list, or fall back to legacy `n_nodes`."""
+    channels = config.get("channels")
+    if channels is None:
+        n_nodes = config.get("n_nodes")
+        if n_nodes is None:
+            raise ValueError("config must provide either 'channels' or 'n_nodes'")
+        channels = list(range(n_nodes))
+
+    if not isinstance(channels, list) or not channels:
+        raise ValueError(f"channels must be a non-empty list, got {channels!r}")
+    if len(channels) > 8:
+        raise ValueError(f"channels may have at most 8 entries, got {len(channels)}")
+    if any((not isinstance(c, int)) or c < 0 or c > 7 for c in channels):
+        raise ValueError(f"every channel must be an int in 0..7, got {channels!r}")
+    if len(set(channels)) != len(channels):
+        raise ValueError(f"channels must be unique, got {channels!r}")
+    return channels                                                                                                                  
                 
                                                                                                                                 
 # ── Build nodes + groups ────────────────────────────────────────────────
 # Replaces simulation/builders.py entirely.
                                                                                                                                 
 def build_nodes_and_groups(
-    config: dict,                                                                                                               
+    config: dict,
 ) -> tuple[dict[str, list[Node]], dict[str, list[Group]]]:
-    """Flat construction of all nodes and (if n_nodes > 1) their groups."""                                                     
-    data    = config["data"]                                                                                                    
-    gmm_cfg = config["gmm"]                                                                                                     
-    n_nodes = config["n_nodes"]                                                                                                 
-    temp    = config["temperature"]                                                                                             
-                                                                                                                                
-    if not 1 <= n_nodes <= 8:                                                                                                   
-        raise ValueError(f"n_nodes must be in 1..8, got {n_nodes}")                                                             
-                                                                                                                                
-    nodes_by_type:  dict[str, list[Node]]  = {mt: [] for mt in data["machine_types"]}                                           
+    """Flat construction of all nodes and (if len(channels) > 1) their groups."""
+    data     = config["data"]
+    gmm_cfg  = config["gmm"]
+    channels = _resolve_channels(config)
+    temp     = config["temperature"]
+
+    nodes_by_type:  dict[str, list[Node]]  = {mt: [] for mt in data["machine_types"]}
     groups_by_type: dict[str, list[Group]] = {mt: [] for mt in data["machine_types"]}
-                                                                                                                                
+
     for mtype in data["machine_types"]:
         for mid in data["machine_ids"]:
-            machine_nodes = [                                                                                                   
+            machine_nodes = [
                 Node(
-                    node_id       = f"{mtype}_{mid}_ch{ch}",                                                                    
-                    machine_type  = mtype,                                                                                      
+                    node_id       = f"{mtype}_{mid}_ch{ch}",
+                    machine_type  = mtype,
                     machine_id    = mid,
-                    channel       = ch,                                                                                         
+                    channel       = ch,
                     n_mels        = gmm_cfg["n_mels"],
-                    n_components  = gmm_cfg["n_components"],                                                                    
-                    threshold_pct = gmm_cfg["threshold_pct"],                                                                   
-                    cusum_h_sigma = gmm_cfg["cusum_h_sigma"],                                                                   
-                    cusum_h_floor = gmm_cfg["cusum_h_floor"],                                                                   
-                    seed          = gmm_cfg["seed"],                                                                            
-                )                                                                                                               
-                for ch in range(n_nodes)                                                                                        
-            ]   
-            nodes_by_type[mtype].extend(machine_nodes)                                                                          
+                    n_components  = gmm_cfg["n_components"],
+                    threshold_pct = gmm_cfg["threshold_pct"],
+                    cusum_h_sigma = gmm_cfg["cusum_h_sigma"],
+                    cusum_h_floor = gmm_cfg["cusum_h_floor"],
+                    seed          = gmm_cfg["seed"],
+                )
+                for ch in channels
+            ]
+            nodes_by_type[mtype].extend(machine_nodes)
 
-            if n_nodes > 1:                                                                                                     
+            if len(channels) > 1:
                 groups_by_type[mtype].append(Group(
                     machine_type  = mtype,
                     machine_id    = mid,
                     nodes         = machine_nodes,
                     temperature   = temp,
-                    threshold_pct = gmm_cfg["threshold_pct"],                                                                   
+                    threshold_pct = gmm_cfg["threshold_pct"],
                     cusum_h_sigma = gmm_cfg["cusum_h_sigma"],
-                    cusum_h_floor = gmm_cfg["cusum_h_floor"],                                                                   
+                    cusum_h_floor = gmm_cfg["cusum_h_floor"],
                 ))
-                                                                                                                                
+
     return nodes_by_type, groups_by_type
 
                                                                                                                                 
@@ -96,17 +117,19 @@ def main(config_path: str = "simulation/configs/default.yaml") -> None:
     with open(config_path) as f:
         config = yaml.safe_load(f)                                                                                              
                 
-    sim  = config["simulation"]                                                                                                 
-    data = config["data"]
-    snr  = _resolve_snr(config)                                                                                                 
-                
-    print(f"Config:     {config_path}")                                                                                         
+    sim      = config["simulation"]
+    data     = config["data"]
+    snr      = _resolve_snr(config)
+    channels = _resolve_channels(config)
+    config["channels"] = channels   # normalise so downstream sees a canonical list
+
+    print(f"Config:     {config_path}")
     print(f"SNR:        {snr}")
-    print(f"n_nodes:    {config['n_nodes']}  (channels {list(range(config['n_nodes']))})")                                      
-    print(f"GMM:        n_mels={config['gmm']['n_mels']}"                                                                       
-        f"  n_components={config['gmm']['n_components']}")                                                                    
-    print(f"Fusion T:   {config['temperature']}")                                                                               
-    print(f"Shuffle:    {sim['shuffle_mode']}")                                                                                 
+    print(f"Channels:   {channels}  (n={len(channels)})")
+    print(f"GMM:        n_mels={config['gmm']['n_mels']}"
+        f"  n_components={config['gmm']['n_components']}")
+    print(f"Fusion T:   {config['temperature']}")
+    print(f"Shuffle:    {sim['shuffle_mode']}")
     print(f"Warmup:     {sim['warmup_count']}")
     print()                                                                                                                     
                 

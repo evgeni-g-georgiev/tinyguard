@@ -42,12 +42,15 @@ CUSUM_H_FLOOR   = 1.0
 
 SEED            = 42
 
-# r-search grid for --r-search
+# r-search grid. Used by simulation/node/node.py during calibration and
+# mirrored by deployment/config.h for the on-device r-search.
 R_CANDIDATES    = [0.5, 0.7, 0.9, 1.0]
 
-# Fixed r values for single-run mode (no r-search)
+# Default r values used by deployment/ before the r-search runs (mirrored in
+# deployment/config.h). Unused on the Python side; greedy diversity in
+# simulation/ picks every node's r from R_CANDIDATES at runtime.
 NODE_R_A        = 1.0
 NODE_R_B        = 0.0
 
-# Window size for the diagnostic rolling mean in plots and Serial output
+# Window size for the diagnostic rolling mean in deployment/'s Serial output.
 ROLLING_WINDOW  = 5

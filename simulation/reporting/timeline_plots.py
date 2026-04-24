@@ -1,12 +1,13 @@
 """Timeline plots — per-node, per-group (fused), grid, and compare_single.
-                                                                                    
-Built on the 47d8f94 styling (anomaly injection shading, missed-block brackets,
-auto-generated title with detection/FA/AUC/lag) with GMM-era additions:               
-- S_t rolling CUSUM accumulator overlay (toggle)                                    
-- k (clip-level threshold) and h (alarm height) horizontal lines (toggle)           
-- per-group fused-z-score plot with per-node z-score overlays when n_nodes > 1      
-- compare_single/ folder: the selected channel's baseline plot for                  
-    NL-vs-independent comparison                                                      
+
+Each plot shows anomaly injection shading, missed-block brackets, and an
+auto-generated title with detection/FA/AUC/lag. Additional overlays:
+- S_t rolling CUSUM accumulator overlay (toggle)
+- k (clip-level threshold) and h (alarm height) horizontal lines (toggle)
+- per-group fused-z-score plot with per-node z-score overlays when
+  len(channels) > 1
+- compare_single/ folder: the selected channel's baseline plot for
+    NL-vs-independent comparison
 """                                                                                   
                                                                                     
 from pathlib import Path                                                              
@@ -314,8 +315,8 @@ def save_plots(
     plots_dir = run_dir / "plots"                                                     
     plots_dir.mkdir(exist_ok=True)
                                                                                     
-    n_nodes    = config["n_nodes"]                                                    
-    has_groups = n_nodes > 1                                                          
+    n_nodes    = len(config["channels"])
+    has_groups = n_nodes > 1
     gmm        = config["gmm"]                                                        
     sep_desc   = (f"TWFR-GMM ({gmm['n_components']} components, diag cov, "           
                 f"n_mels={gmm['n_mels']})")                                         

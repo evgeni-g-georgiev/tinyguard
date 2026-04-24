@@ -3,14 +3,14 @@
 # No selectors, no named blocks.  Every key is a direct parameter.
 # ═══════════════════════════════════════════════════════════════════════════                                                   
                                                                                                                                 
-# ── Core node-learning knob ──────────────────────────────────────────────                                                     
-n_nodes:     8           # 1..8 — number of mic channels per machine.                                                           
-                          # 1  ⇒ single-node run, no fusion.                                                                     
-                          # >1 ⇒ one Group per machine, softmax(-μ/T) fusion.                                                    
-temperature: 100.0       # Softmax temperature for fusion weights.                                                              
-                          # T=1   → hard selection (reproduces collapse bug).                                                    
-                          # T=100 → near-equal weights, small fit-quality bias.                                                  
-                          # T→∞   → exactly equal weights.                                                                       
+# ── Core node-learning knob ──────────────────────────────────────────────
+channels:    [0,4]   # MIMII mic indices; 1..8 entries, 0..7 values.
+                                         # len==1 ⇒ single-node run, no fusion.
+                                         # len>1  ⇒ one Group per machine, softmax(-σ/T) fusion.
+temperature: 100.0       # Softmax temperature for fusion weights.
+                          # T=1   → hard selection (reproduces collapse bug).
+                          # T=100 → near-equal weights, small fit-quality bias.
+                          # T→∞   → exactly equal weights.
                                                                                                                                 
 # ── GMM / detector (all pass-through to gmm.detector.GMMDetector) ────────                                                     
 gmm:                                                                                                                            
@@ -23,7 +23,7 @@ gmm:
                                                                                                                                 
 # ── Simulation loop ──────────────────────────────────────────────────────                                                     
 simulation:
-  warmup_count:    120           # 50 fit + 10 val (matches teammate's split)                                                    
+  warmup_count:    60           # 50 fit + 10 val (matches gmm/ N_FIT_CLIPS + N_VAL_CLIPS)
   shuffle_mode:    block_fixed  # random | block_random | block_fixed                                                           
   block_size:      10           # 10-clip blocks ≈ teammate's 3-round windows                                                   
   block_interval:  10                                                                                                           
@@ -51,7 +51,7 @@ snr: "-6dB"        # 6dB | 0dB | -6dB
                                                                                                                                 
 # ── Data ─────────────────────────────────────────────────────────────────                                                     
 data:                                                                                                                           
-  mimii_root:    data/mimii/{snr}                                                                                               
+  mimii_root:    data/mimii_{snr}
   splits_dir:    simulation/data/splits/{snr}                                                                                   
   machine_types: [fan, pump, slider, valve]
   machine_ids:   [id_00, id_02, id_04, id_06] 

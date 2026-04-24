@@ -1,12 +1,15 @@
 """Lockstep loop — every node advances one timestep per iteration.
-                                                                                                                                
+
 Three phases per run:
-1. Calibration       — every node runs r-search + GMM fit independently.                                                      
-2. Fusion setup      — for each group (n_nodes > 1), compute weights + CUSUM.                                                 
-3. Evaluation        — for each timestep, every node scores one clip, then                                                    
-                        every group fuses the per-node scores.                                                                 
-                                                                                                                                
-No federation / periodic merge. Fusion is calibration-time only.                                                                
+1. Calibration       — every node runs r-search + GMM fit (greedy diversity:
+                        each node prefers an r not already claimed by a peer
+                        on the same machine).
+2. Fusion setup      — for each group (len(channels) > 1), compute σ-weighted
+                        fusion weights + fused CUSUM params.
+3. Evaluation        — for each timestep, every node scores one clip, then
+                        every group fuses the per-node scores.
+
+No federation / periodic merge. Fusion is calibration-time only.
 """                                                                                                                             
 
 from dataclasses import dataclass, field                                                                                        
@@ -59,16 +62,21 @@ def calibrate(
     # Lookup: (mtype, mid) → timeline (all nodes for one machine share it).                                                     
     timeline_lookup = _timeline_lookup(timelines_by_type)                                                                       
                                                                                                                                 
-    # Phase 1 — per-node r-search + GMM fit.                                                                                    
-    for mtype, nodes in nodes_by_type.items():                                                                                  
-        for node in nodes:                                                                                                      
-            tl = timeline_lookup[(mtype, node.machine_id)]
-            fit_paths = tl.warmup_paths[:-N_VAL_CLIPS]                                                                          
-            val_paths = tl.warmup_paths[-N_VAL_CLIPS:]                                                                          
-            print(f"  Calibrating {node.node_id}  (mic {node.channel})")                                                        
-            node.calibrate(fit_paths, val_paths)                                                                                
-            print(f"    r={node.r:.2f}  k={node.k:.3f}  h={node.h:.3f}"                                                         
-                f"  μ_val={node.mu_val:.3f}")                                                                                 
+    # Phase 1 — per-node r-search + GMM fit with greedy diversity: each node
+    # picks the best r not already claimed by another node on the same machine.
+    claimed: dict[tuple[str, str], set[float]] = {}
+    for mtype, nodes in nodes_by_type.items():
+        for node in nodes:
+            key = (mtype, node.machine_id)
+            claimed_rs = claimed.setdefault(key, set())
+            tl = timeline_lookup[key]
+            fit_paths = tl.warmup_paths[:-N_VAL_CLIPS]
+            val_paths = tl.warmup_paths[-N_VAL_CLIPS:]
+            print(f"  Calibrating {node.node_id}  (mic {node.channel})")
+            node.calibrate(fit_paths, val_paths, claimed_rs=claimed_rs)
+            claimed_rs.add(node.r)
+            print(f"    r={node.r:.2f}  k={node.k:.3f}  h={node.h:.3f}"
+                f"  μ_val={node.mu_val:.3f}")
                                                                                                                                 
     # Phase 2 — per-group fusion weights.                                                                                       
     for mtype, groups in groups_by_type.items():                                                                                

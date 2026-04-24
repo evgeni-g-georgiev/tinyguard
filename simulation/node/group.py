@@ -1,18 +1,23 @@
                                                                                                                             
 """Group — holds the N nodes of one machine and computes their fused score.
-                                                                                                                                
-A Group exists only when n_nodes > 1.  For n_nodes == 1 we skip construction
-entirely and every "per-group" artefact simply mirrors the single node.                                                         
-                                                                                                                                
-Paper mapping (Kanjo & Aslanov 2026 §3, eq. 3/5):                                                                               
-    θ_i  = Node.detector.gmm_.{mu_, sigma2_, pi_}   — per-node GMM state                                                        
-    ϕ_j  = Node.mu_val, Node.sigma_val              — confidence signals                                                        
-    M_i  = Group.score(per_node_nlls)               — score-space weighted z-sum                                                
-                                                                                                                                
-Fusion math (generalised to N peers from the teammate's 2-peer NodeLearning):                                                   
-    z_i(x)      = (NLL_i(x) - μ_val_i) / σ_val_i                                                                                
-    w           = softmax(-μ_val / temperature)      ∈ R^N,  sum(w) = 1                                                         
-    fused_z(x)  = Σ_i w_i · z_i(x)                                                                                              
+
+A Group exists only when len(channels) > 1.  For a single-channel run we skip
+construction entirely and every "per-group" artefact simply mirrors the single
+node.
+
+Paper mapping (Kanjo & Aslanov 2026 §3, eq. 3/5):
+    θ_i  = Node.detector.gmm_.{mu_, sigma2_, pi_}   — per-node GMM state
+    ϕ_j  = Node.mu_val, Node.sigma_val              — confidence signals
+    M_i  = Group.score(per_node_nlls)               — score-space weighted z-sum
+
+Fusion math (generalised to N peers):
+    z_i(x)      = (NLL_i(x) - μ_val_i) / σ_val_i
+    w           = softmax(-σ_val / temperature)      ∈ R^N,  sum(w) = 1
+    fused_z(x)  = Σ_i w_i · z_i(x)
+
+Lower σ_val_i means the node's val NLLs are more concentrated → higher
+confidence → larger weight in the fused score. Mirrors the 2-node fusion in
+deployment/node_learning.h, generalised here to N nodes.
 """                                                                                                                             
                                                                                                                                 
 from dataclasses import dataclass, field                                                                                        
@@ -79,7 +84,7 @@ class Group:
         """                                                                                                                     
         mu_vals = np.array([n.mu_val for n in self.nodes], dtype=np.float64)
         sigma_vals = np.array([n.sigma_val for n in self.nodes], dtype=np.float64)
-        self.w  = _softmax(-mu_vals / self.temperature).astype(np.float64)                                                      
+        self.w  = _softmax(-sigma_vals / self.temperature).astype(np.float64)
                                                                                                                                 
         # Z-normalise each node's val NLLs, weight-sum over nodes.                                                              
         # Take min length in case of rare clip-count mismatch.                                                                  

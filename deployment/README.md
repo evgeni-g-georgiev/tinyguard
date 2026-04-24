@@ -27,11 +27,12 @@ Each board runs `COLLECT -> TRAIN -> SYNC -> MONITOR`:
 - **TRAIN** fits a 2-component diagonal GMM for every candidate `r`,
   calibrates the threshold on 10 held-out clips, and keeps the one with
   the lowest mean val NLL.
-- **SYNC** exchanges val statistics between the two nodes over BLE. Node
-  B applies the diversity constraint `|r_B - r_A| >= 0.25` (re-fitting
-  from the already-captured spectrograms if needed), then both nodes
-  call `nl_calibrate()` to set up a fused CUSUM. If SYNC times out
-  (30 s), each node falls back to solo mode using only its own CUSUM.
+- **SYNC** exchanges val statistics between the two nodes over BLE. If
+  Node B picked the same `r` as Node A, it switches to the next-best
+  candidate (greedy diversity, matching `simulation/`), re-fitting from
+  the already-captured spectrograms. Both nodes then call
+  `nl_calibrate()` to set up a fused CUSUM. If SYNC times out (30 s),
+  each node falls back to solo mode using only its own CUSUM.
 - **MONITOR** scores each new clip, exchanges NLLs over BLE, and fires
   the alarm from the fused CUSUM. Solo mode uses the local CUSUM.
 

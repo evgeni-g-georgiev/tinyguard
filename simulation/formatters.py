@@ -1,12 +1,12 @@
 """Terminal output — per-timestep live line + final result tables.
-                                                                                    
+
 Three result sections:
-1. Per-node (independent)        — clip + block metrics + per-type means            
-2. Per-group (node-learning)     — same shape, only when n_nodes > 1                
-3. NL-vs-independent comparison  — fused AUC vs mean-of-nodes AUC                   
-                                                                                    
-result_lines(...) returns list[str] used by both print_results (terminal)             
-and reporting.results.save_results (summary.txt).                                     
+1. Per-node (independent)        — clip + block metrics + per-type means
+2. Per-group (node-learning)     — same shape, only when len(channels) > 1
+3. NL-vs-independent comparison  — fused AUC vs mean-of-nodes AUC
+
+result_lines(...) returns list[str] used by both print_results (terminal)
+and reporting.results.save_results (summary.txt).
 """             
                                                                                     
 from collections import defaultdict

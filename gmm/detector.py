@@ -37,7 +37,7 @@ class GMMDetector:
         threshold_  95th-percentile NLL on val clips
         cusum_k_    CUSUM reference level (= threshold_)
         cusum_h_    CUSUM alarm height
-        val_nlls_   per-val-clip NLLs (used by NodeLearning fusion)
+        val_nlls_   per-val-clip NLLs (used by simulation/node/group.py fusion)
         mu_val_     mean(val_nlls_)  (confidence signal)
         sigma_val_  std(val_nlls_)   (confidence signal, floored)
     """

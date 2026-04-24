@@ -138,8 +138,8 @@ def _write_summary_txt(
     header = [                                                                        
         f"Run: {run_dir.name}",
         f"Config: {config_path}",
-        f"n_nodes={config['n_nodes']}  T={config['temperature']}  "                   
-        f"n_mels={config['gmm']['n_mels']}  snr={config['snr']}",                     
+        f"channels={config['channels']}  T={config['temperature']}  "
+        f"n_mels={config['gmm']['n_mels']}  snr={config['snr']}",
         f"Shuffle: {config['simulation']['shuffle_mode']}  "                          
         f"Warmup: {config['simulation']['warmup_count']}  "                           
         f"Seed: {config['simulation']['seed']}",                                      

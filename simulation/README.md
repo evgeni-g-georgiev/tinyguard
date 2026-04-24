@@ -1,66 +1,77 @@
-# Simulation                                                                                          
-                                                                                                      
-Lockstep simulation of on-device anomalous sound detection across 16 MIMII                            
-machines (4 types × 4 IDs).
-                                                                                                      
-## Quickstart   
+# Simulation
+
+Lockstep simulation of N-node TWFR-GMM anomaly detection across the 16
+MIMII machines (4 types × 4 IDs). Configurable for 1–8 microphone channels
+per machine, with greedy r-diversity, σ-weighted fusion, and rich
+clip-level + block-level metrics.
+
+## Quickstart
 
 ```bash
 # 1. Download MIMII data for one SNR (~30 GB per SNR)
-python data/download_mimii.py --snr 6dB      # also: 0dB, -6dB                                        
-                                                                                                      
-# 2. Split into warmup / test_normal / test_abnormal per node                                         
-python -m simulation.data.split_data --snr 6dB                                                        
-                
-# 3. Run the simulation
+python data/download_mimii.py --snr 6dB      # also: 0dB, -6dB
+
+# 2. Run the simulation (auto-splits on first run)
 python -m simulation.run_simulation
-                                                                                                      
-Step 2 is optional — the simulation auto-splits on first run if the splits                            
-dir is missing. Step 1 is not optional; raw MIMII data must be on disk.                               
-                                                                                                      
-Switching SNR   
-                                                                                                      
-Edit simulation/configs/default.yaml:                                                                 
-snr: 0dB    # 6dB | 0dB | -6dB
-                                                                                                      
-Or download + split a new SNR and re-run. Each SNR lives in its own dir
-(data/mimii/<snr>/, simulation/data/splits/<snr>/), so they coexist.                                  
-  
-Output                                                                                                
-                
-Each run creates a timestamped directory under simulation/outputs/runs/:                              
-                
-simulation/outputs/runs/2026-04-16_10-30-00/
+```
+
+Step 1 is required; raw MIMII data must be on disk. The split step is
+automatic — `simulation/data/splits/<snr>/` is created from `data/mimii_<snr>/`
+on the first run for that SNR.
+
+## Switching SNR or channels
+
+Edit `simulation/configs/default.yaml`:
+
+```yaml
+channels: [1, 4, 6]   # 1..8 entries, mic indices 0..7
+snr: "0dB"            # 6dB | 0dB | -6dB
+```
+
+Each SNR lives in its own directory (`data/mimii_<snr>/`,
+`simulation/data/splits/<snr>/`), so SNRs coexist on disk.
+
+## Output
+
+Each run creates a timestamped directory under `simulation/outputs/runs/`:
+
+```
+simulation/outputs/runs/2026-04-25_00-14-23/
   config.yaml       — verbatim copy of the YAML used
-  results.json      — per-node scores, labels, AUC, confusion                                         
-  summary.txt       — human-readable AUC table
-  plots/                                                                                              
-    grid.png        — 4×4 score timeline grid                                                         
-    grid_state.png  — 4×4 with state detection brackets (when state_enabled)
-    fan_id_00.png   — per-node full-size timeline                                                     
-    ...         
-    latent/         — t-SNE and score distribution grids (when latent_plot.enabled)                   
-                                                                                                      
-Module layout
-                                                                                                      
-simulation/     
-  run_simulation.py   — entry point: reads YAML, wires everything, runs lockstep
-  builders.py         — constructs components from config (preprocessor, embedder, etc.)              
-  metrics.py          — pure metric computation (NodeMetrics, BlockStateMetrics)                      
-  formatters.py       — terminal output formatting (print_results, format_step)                       
-  lockstep.py         — the lockstep evaluation loop                                                  
-  registry.py         — component registry (register/create pattern)                                  
-  reporting/          — all disk IO: results serialisation + matplotlib plots                         
-  configs/            — YAML experiment configs                                                       
-  data/               — data loading, splitting, timeline construction
-  inference_models/   — separator and embedder implementations                                        
-  node/               — Node class, topology, merge
+  results.json      — per-node + per-group full traces (scores, S_t, labels, alarms)
+  summary.txt       — human-readable metrics table (clip + block, per-type + overall)
+  plots/
+    grid.png        — N×4 score timeline grid (fused if len(channels) > 1)
+    grid_compare_single.png — same grid for the baseline single channel
+    ch<N>/          — per-node full-size timeline plots, one folder per channel
+    fused/          — per-machine fused-z-score plots (when len(channels) > 1)
+    compare_single/ — baseline single-channel plots for NL-vs-independent comparison
+    latent/         — t-SNE + score-distribution grids (when latent_plot.enabled)
+```
 
-Disabling slow steps
+## Module layout
 
-Latent t-SNE plots 
+```
+simulation/
+  run_simulation.py     — entry point: reads YAML, builds nodes/groups, runs lockstep
+  lockstep.py           — calibration + evaluation phases (yields TimestepResult)
+  metrics.py            — pure metric computation (ClipMetrics, BlockMetrics)
+  formatters.py         — terminal output (per-timestep live line + result tables)
+  configs/              — YAML experiment configs (see configs/README.md)
+  data/                 — split_data.py + simulation_loader.py (see data/README.md)
+  node/
+    node.py             — Node: one mic channel + one fitted GMMDetector
+    group.py            — Group: N nodes of one machine + σ-weighted fusion
+  reporting/            — JSON results, summary.txt, timeline + latent plots
+  outputs/              — run artefacts (one timestamped subdir per run)
+```
+
+## Disabling slow steps
+
+Latent t-SNE plots are off by default. To enable:
+
+```yaml
 latent_plot:
-  enabled: false      
----
-
-                
+  enabled: true
+  node_subset: [0, 3]   # which channels; [] = all
+```

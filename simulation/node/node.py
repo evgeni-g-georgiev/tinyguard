@@ -44,32 +44,44 @@ class Node:
     cusum_S: list[float] = field(default_factory=list)
     alarms:  list[bool]  = field(default_factory=list)                                                                          
 
-    # ── Calibration ───────────────────────────────────────────────────────                                                    
-    def calibrate(self, fit_paths: list[str], val_paths: list[str]) -> None:
-        """Per-node r-search; keep the detector with lowest mean val NLL.                                                       
-                                                                                                                                
-        No diversity constraint between peers — that's a deferred feature.
-        """                                                                                                                     
-        fit_mels = [load_log_mel(p, n_mels=self.n_mels, channel=self.channel)
-                    for p in fit_paths]                                                                                         
-        val_mels = [load_log_mel(p, n_mels=self.n_mels, channel=self.channel)
-                    for p in val_paths]                                                                                         
+    # ── Calibration ───────────────────────────────────────────────────────
+    def calibrate(
+        self,
+        fit_paths:  list[str],
+        val_paths:  list[str],
+        claimed_rs: set[float] | None = None,
+    ) -> None:
+        """Per-node r-search with optional greedy diversity constraint.
 
-        best: GMMDetector | None = None                                                                                         
+        Fits a detector at every r in R_CANDIDATES. If ``claimed_rs`` is given,
+        picks the best detector whose r is NOT already claimed by another node
+        in the same machine group. Falls back to the globally best detector if
+        every candidate is claimed (relevant only when N > len(R_CANDIDATES)).
+        """
+        fit_mels = [load_log_mel(p, n_mels=self.n_mels, channel=self.channel)
+                    for p in fit_paths]
+        val_mels = [load_log_mel(p, n_mels=self.n_mels, channel=self.channel)
+                    for p in val_paths]
+
+        best:           GMMDetector | None = None
+        best_unclaimed: GMMDetector | None = None
         for r in R_CANDIDATES:
-            det = GMMDetector(                                                                                                  
+            det = GMMDetector(
                 r             = r,
-                n_components  = self.n_components,                                                                              
+                n_components  = self.n_components,
                 threshold_pct = self.threshold_pct,
                 cusum_h_sigma = self.cusum_h_sigma,
-                cusum_h_floor = self.cusum_h_floor,                                                                             
+                cusum_h_floor = self.cusum_h_floor,
                 n_mels        = self.n_mels,
-                seed          = self.seed,                                                                                      
-            )                                                                                                                   
+                seed          = self.seed,
+            )
             det.fit(fit_mels, val_mels)
-            if best is None or det.mu_val_ < best.mu_val_:                                                                      
+            if best is None or det.mu_val_ < best.mu_val_:
                 best = det
-        self.detector = best
+            if claimed_rs is None or r not in claimed_rs:
+                if best_unclaimed is None or det.mu_val_ < best_unclaimed.mu_val_:
+                    best_unclaimed = det
+        self.detector = best_unclaimed if best_unclaimed is not None else best
 
     # ── Scoring ───────────────────────────────────────────────────────────                                                    
     def score(self, wav_path: str, label: int) -> tuple[float, bool]:
