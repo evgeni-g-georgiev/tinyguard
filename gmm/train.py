@@ -1,57 +1,10 @@
 #!/usr/bin/env python3
-"""
-train.py — Train and compare TWFR-GMM detectors across all 16 MIMII machines.
+"""Train and compare Node A, Node B, and NodeLearning on all 16 MIMII machines.
 
-Runs three detector variants per machine and prints a side-by-side comparison:
+Writes pkl artefacts, PNG timeline plots, per-variant ``results.yaml``, and a
+top-level ``comparison.yaml`` into ``gmm/outputs/{dataset}/``.
 
-  node_a        — Single node.  r selected by r-search over R_CANDIDATES.
-  node_b        — Single node.  r selected by diversity-constrained r-search:
-                  |r_B − r_A| ≥ diversity_margin enforces complementarity.
-  node_learning — Two-node system.  Nodes train independently, exchange confidence
-                  signals (μ_val, σ_val), then fuse z-normalised anomaly scores
-                  with temperature-scaled fit-quality weights
-                  w_i = softmax(−μ_val_i / T).  Implements the "collaborative
-                  learning" regime of the Node Learning paradigm
-                  (Kanjo & Aslanov, 2026, §2, Figure 2).
-
-Node Learning workflow (per machine)
--------------------------------------
-  1. Load N_FIT_CLIPS normal clips.  Node A r-searches freely; Node B r-searches
-     over candidates with |r − r_A| ≥ diversity_margin.
-  2. Each node fits its own 2-component diagonal GMM locally (eq. 1-2).
-  3. Each node calibrates threshold and CUSUM from N_VAL_CLIPS held-out clips,
-     storing (μ_val, σ_val) as confidence signals.
-  4. NodeLearning computes fit-quality weights w_i = softmax(−μ_val_i / T) and
-     calibrates a fused CUSUM on the weighted z-score distribution (eq. 3, 5).
-  5. Evaluate all three variants on the same test set.
-  6. Save artefacts, plots, and YAML summaries.
-
-Usage
------
-  python gmm/train.py                                  # -6 dB dataset (default)
-  python gmm/train.py --dataset 0db                    # 0 dB dataset
-  python gmm/train.py --dataset 6db                    # +6 dB dataset
-  python gmm/train.py --temperature 1                  # hard softmax (ablation)
-  python gmm/train.py --diversity-margin 0             # no diversity constraint
-  python gmm/train.py --verbose                        # per-machine calibration
-
-Inputs
-------
-  preprocessing/outputs/mimii_splits/splits_{dataset}.json
-  data/mimii_{dataset}/
-
-Outputs  (overwrite on re-run — no stale files accumulate)
--------
-  gmm/outputs/{dataset}/node_a/
-      {mtype}_{mid}.pkl    — fitted GMMDetector artefacts  (×16)
-      {mtype}_{mid}.png    — timeline plots                (×16)
-      results.yaml         — per-machine metrics
-  gmm/outputs/{dataset}/node_b/
-      (same structure)
-  gmm/outputs/{dataset}/node_learning/
-      {mtype}_{mid}.png    — timeline plots (fused z-score)(×16)
-      results.yaml
-  gmm/outputs/{dataset}/comparison.yaml  — full 3-way comparison
+Run ``python gmm/train.py --help`` for all flags.
 """
 
 import argparse
@@ -89,11 +42,7 @@ from gmm.node_learning import NodeLearning
 from gmm.plot import plot_machine
 
 
-# ── Dataset registry ──────────────────────────────────────────────────────────
-# Maps the --dataset argument to (MIMII_ROOT, SPLITS_PATH, OUTPUT_DIR).
-# Adding a new dataset variant requires only a new entry here and corresponding
-# constants in the root config.py.
-
+# --dataset argument -> (MIMII root, splits JSON path, output dir).
 _DATASET_CONFIG = {
     "neg6db": (MIMII_NEG6DB_ROOT, MIMII_NEG6DB_SPLITS, GMM_NEG6DB_DIR),
     "0db":    (MIMII_0DB_ROOT,    MIMII_0DB_SPLITS,    GMM_0DB_DIR),
@@ -101,91 +50,33 @@ _DATASET_CONFIG = {
 }
 
 
-# ── Argument parsing ──────────────────────────────────────────────────────────
-
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description=(
-            "Train and compare TWFR-GMM detectors for all 16 MIMII machines.\n"
-            "Runs three variants: single-node Node A (r-search), single-node Node B\n"
-            "(diversity-constrained r-search), and two-node NodeLearning."
-        ),
+        description="Train and compare TWFR-GMM detectors for all 16 MIMII machines.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument(
-        "--dataset",
-        choices=list(_DATASET_CONFIG),
-        default="neg6db",
-        help="Which MIMII SNR dataset to use.",
-    )
-    parser.add_argument(
-        "--splits", type=str, default=None,
-        help="Override path to splits JSON (default: inferred from --dataset).",
-    )
-    parser.add_argument(
-        "--out-dir", type=str, default=None,
-        help="Override output root directory (default: inferred from --dataset).",
-    )
-    parser.add_argument(
-        "--n-mels", type=int, default=N_MELS, metavar="N",
-        help=(
-            f"Number of mel frequency bins (default: {N_MELS}). "
-            "When not the default, outputs go to <dataset>_<N>mel/ automatically."
-        ),
-    )
-    parser.add_argument(
-        "--diversity-margin", type=float, default=0.25, metavar="DELTA",
-        help=(
-            f"Minimum |r_B − r_A| required when selecting Node B's r. "
-            "Enforces functional complementarity (paper §2, Hossain et al.): "
-            "without it both nodes converge to the same r on most machines and "
-            "fusion adds no value. Falls back to unconstrained search if no "
-            f"candidate satisfies the margin. Default: 0.25."
-        ),
-    )
-    parser.add_argument(
-        "--temperature", type=float, default=100.0, metavar="T",
-        help=(
-            "Softmax temperature for NodeLearning fit-quality weights: "
-            "w_i = softmax(-μ_val_i / T). "
-            "T=1 → hard selection (collapses on most machines). "
-            "T=100 (default) → near-equal weights with a small bias toward the "
-            "better-fitting node. T→∞ → exactly equal weights."
-        ),
-    )
-    parser.add_argument(
-        "--weight-by",
-        choices=["mu", "sigma"],
-        default="sigma",
-        help=(
-            "Confidence signal used for NodeLearning fusion weights. "
-            "'mu' (default): softmax(-μ_val / T) — lower mean val NLL → higher weight. "
-            "'sigma': softmax(-σ_val) — lower val NLL std → higher weight (no temperature)."
-        ),
-    )
-    parser.add_argument(
-        "--mic-a", type=int, default=0, metavar="N",
-        help=(
-            "Microphone channel index for Node A (0-7, default: 0). "
-            "MIMII recordings contain 8 channels from a circular mic array. "
-            "Using distinct channels per node simulates physically separated devices."
-        ),
-    )
-    parser.add_argument(
-        "--mic-b", type=int, default=1, metavar="N",
-        help="Microphone channel index for Node B (0-7, default: 1).",
-    )
-    parser.add_argument(
-        "--verbose", action="store_true",
-        help="Print per-machine calibration parameters and node weights.",
-    )
+    parser.add_argument("--dataset", choices=list(_DATASET_CONFIG), default="neg6db",
+                        help="MIMII SNR variant.")
+    parser.add_argument("--splits", type=str, default=None,
+                        help="Override path to splits JSON.")
+    parser.add_argument("--out-dir", type=str, default=None,
+                        help="Override output root directory.")
+    parser.add_argument("--n-mels", type=int, default=N_MELS, metavar="N",
+                        help="Number of mel bins. Non-default values suffix the output dir.")
+    parser.add_argument("--diversity-margin", type=float, default=0.25, metavar="DELTA",
+                        help="Minimum |r_B - r_A| for Node B. 0 disables the constraint.")
+    parser.add_argument("--temperature", type=float, default=100.0, metavar="T",
+                        help="Softmax temperature for NodeLearning fusion weights.")
+    parser.add_argument("--mic-a", type=int, default=0, metavar="N",
+                        help="Microphone channel index for Node A (0-7).")
+    parser.add_argument("--mic-b", type=int, default=1, metavar="N",
+                        help="Microphone channel index for Node B (0-7).")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Print per-machine calibration parameters.")
     return parser
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
 def _load_clips(paths: list[str], desc: str, n_mels: int = N_MELS, channel: int | None = None) -> list:
-    """Load log-mel spectrograms, skipping files that fail to load."""
     log_mels: list = []
     for path in tqdm(paths, desc=desc, leave=False, unit="clip"):
         try:
@@ -203,34 +94,16 @@ def _fit_node(
     exclude_r:        float | None = None,
     diversity_margin: float        = 0.0,
 ) -> GMMDetector:
-    """Fit a GMMDetector, selecting the best r from r_candidates.
+    """Fit one detector per candidate r and return the one with the lowest mu_val.
 
-    Single candidate → straightforward fixed-r fit (standard run).
-    Multiple candidates → fit one detector per r, return the one with the
-    lowest mean validation NLL (best fit quality).
-
-    Parameters
-    ----------
-    fit_log_mels     : list of np.ndarray, shape (n_mels, T)
-    val_log_mels     : list of np.ndarray, shape (n_mels, T)
-    r_candidates     : list of float — GWRP decay values to evaluate
-    n_mels           : int — must match the loaded spectrograms
-    exclude_r        : float | None — if set, filter out candidates within
-                       diversity_margin of this value (used for Node B when
-                       diversity-constrained r-search is active).
-    diversity_margin : float — minimum |r - exclude_r| required to keep a
-                       candidate. Ignored when exclude_r is None.
-
-    Returns
-    -------
-    GMMDetector — fitted and calibrated, with the best r selected.
+    When ``exclude_r`` is set, candidates within ``diversity_margin`` of it are
+    filtered out (falling back to the full grid if none remain).
     """
     available = r_candidates
     if exclude_r is not None and diversity_margin > 0.0:
         diverse = [r for r in r_candidates if abs(r - exclude_r) >= diversity_margin]
         if diverse:
             available = diverse
-        # else: no candidate satisfies the margin — fall back to full search
 
     best: GMMDetector | None = None
     for r in available:
@@ -242,7 +115,6 @@ def _fit_node(
 
 
 def _round_summary(round_results: list[dict]) -> str:
-    """Format per-round metrics as a single console line."""
     parts = []
     for rr in round_results:
         delay = f"{rr['detection_delay_secs']}s" if rr["detected"] else "miss"
@@ -251,7 +123,6 @@ def _round_summary(round_results: list[dict]) -> str:
 
 
 def _result_row(result: dict | None) -> dict:
-    """Extract aggregate scalar metrics from an evaluate_machine result dict."""
     if result is None:
         return {"detected": 0, "total": 0, "n_fp": 0, "n_norm": 0, "delays": [], "auc": None}
     rrs = result["round_results"]
@@ -270,14 +141,12 @@ def _result_row(result: dict | None) -> dict:
 
 
 def _augment_result(result: dict, r_desc: str, score_label: str) -> dict:
-    """Inject plot metadata keys into an evaluate_machine result dict."""
     result["r_desc"]      = r_desc
     result["score_label"] = score_label
     return result
 
 
 def _collect_yaml_entry(result: dict, det) -> dict:
-    """Build the per-machine YAML entry for one variant."""
     return {
         "threshold": round(float(det.threshold_), 5),
         "cusum_k":   round(float(det.cusum_k_), 5),
@@ -287,8 +156,6 @@ def _collect_yaml_entry(result: dict, det) -> dict:
     }
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
-
 def main() -> None:
     args        = _build_parser().parse_args()
     mimii_root, splits_default, out_default = _DATASET_CONFIG[args.dataset]
@@ -296,8 +163,8 @@ def main() -> None:
     splits_path = Path(args.splits)  if args.splits  else splits_default
     out_root    = Path(args.out_dir) if args.out_dir else out_default
 
-    # When --n-mels overrides the default, suffix the output dir so it never
-    # overwrites the standard 64-mel outputs.
+    # Non-default --n-mels suffixes the output dir so the 64-mel outputs aren't
+    # overwritten.
     if not args.out_dir and args.n_mels != N_MELS:
         out_root = out_root.parent / f"{out_root.name}_{args.n_mels}mel"
 
@@ -309,7 +176,6 @@ def main() -> None:
         )
         sys.exit(1)
 
-    # Output subdirectories — created fresh, overwrite on re-run.
     dir_node_a        = out_root / "node_a"
     dir_node_b        = out_root / "node_b"
     dir_node_learning = out_root / "node_learning"
@@ -319,19 +185,14 @@ def main() -> None:
     with open(splits_path) as f:
         splits = json.load(f)
 
-    div_desc    = f"diversity ≥ {args.diversity_margin:g}" if args.diversity_margin > 0 else "unconstrained"
-    fusion_desc = (
-        f"softmax(-σ_val / T={args.temperature:g})"
-        if args.weight_by == "sigma"
-        else f"softmax(-μ_val / T={args.temperature:g})"
-    )
+    div_desc = f"diversity >= {args.diversity_margin:g}" if args.diversity_margin > 0 else "unconstrained"
     print(
         f"TWFR-GMM Node Learning comparison  [{args.dataset}]\n"
         f"  Node A:  mic{args.mic_a}  r-search over {R_CANDIDATES}\n"
         f"  Node B:  mic{args.mic_b}  r-search over {R_CANDIDATES}  ({div_desc})\n"
-        f"  Fusion:  {fusion_desc}\n"
+        f"  Fusion:  softmax(-sigma_val / T={args.temperature:g})\n"
         f"  n_mels={args.n_mels}  fit clips={N_FIT_CLIPS}  val clips={N_VAL_CLIPS}\n"
-        f"  outputs → {out_root}\n"
+        f"  outputs -> {out_root}\n"
     )
 
     results_node_a:        dict = {}
@@ -339,7 +200,6 @@ def main() -> None:
     results_node_learning: dict = {}
     comparison:            dict = {}
 
-    # ── Per-machine loop ──────────────────────────────────────────────────────
     for mtype in MACHINE_TYPES:
         for mid in MACHINE_IDS:
             key = f"{mtype}/{mid}"
@@ -349,16 +209,9 @@ def main() -> None:
 
             print(f"  [{key}]")
 
-            # Load training clips.
-            # The manifest provides N_TRAIN_CLIPS=60 normal clips.
-            # The last N_VAL_CLIPS=10 are held out for calibration;
-            # the GMM is fit on the first N_FIT_CLIPS=50.
             all_paths = [str(mimii_root / p) for p in splits[key]["train_normal"]]
             if len(all_paths) < N_TRAIN_CLIPS:
-                print(
-                    f"    WARNING: expected {N_TRAIN_CLIPS} train clips, "
-                    f"got {len(all_paths)}."
-                )
+                print(f"    WARNING: expected {N_TRAIN_CLIPS} train clips, got {len(all_paths)}.")
 
             fit_paths = all_paths[:N_FIT_CLIPS]
             val_paths = all_paths[N_FIT_CLIPS:N_FIT_CLIPS + N_VAL_CLIPS]
@@ -375,12 +228,10 @@ def main() -> None:
                 print(f"    No valid val clips — skipping.\n")
                 continue
 
-            # ── Step 1: Fit Node A ────────────────────────────────────────────
             det_a = _fit_node(fit_log_mels_a, val_log_mels_a, R_CANDIDATES, args.n_mels)
             det_a.channel_ = args.mic_a
             det_a.save(dir_node_a / f"{mtype}_{mid}.pkl")
 
-            # ── Step 2: Fit Node B (diversity-constrained) ────────────────────
             det_b = _fit_node(
                 fit_log_mels_b, val_log_mels_b, R_CANDIDATES, args.n_mels,
                 exclude_r=det_a.r_,
@@ -389,15 +240,7 @@ def main() -> None:
             det_b.channel_ = args.mic_b
             det_b.save(dir_node_b / f"{mtype}_{mid}.pkl")
 
-            # ── Step 3: Build NodeLearning (pairwise collaborative inference) ─
-            # Nodes exchange confidence signals (μ_val, σ_val) and calibrate
-            # a fused CUSUM.  Paper eq. 3 (merge operator) and eq. 5
-            # (context-weighted interaction).
-            node_learning = NodeLearning(
-                det_a, det_b,
-                temperature=args.temperature,
-                weight_by=args.weight_by,
-            )
+            node_learning = NodeLearning(det_a, det_b, temperature=args.temperature)
             node_learning.channel_a_ = args.mic_a
             node_learning.channel_b_ = args.mic_b
 
@@ -406,13 +249,13 @@ def main() -> None:
                     f"    Node A (r={det_a.r_}): "
                     f"thr={det_a.threshold_:.4f}  "
                     f"cusum_h={det_a.cusum_h_:.4f}  "
-                    f"μ_val={det_a.mu_val_:.4f}  σ_val={det_a.sigma_val_:.4f}"
+                    f"mu_val={det_a.mu_val_:.4f}  sigma_val={det_a.sigma_val_:.4f}"
                 )
                 print(
                     f"    Node B (r={det_b.r_}): "
                     f"thr={det_b.threshold_:.4f}  "
                     f"cusum_h={det_b.cusum_h_:.4f}  "
-                    f"μ_val={det_b.mu_val_:.4f}  σ_val={det_b.sigma_val_:.4f}"
+                    f"mu_val={det_b.mu_val_:.4f}  sigma_val={det_b.sigma_val_:.4f}"
                 )
                 print(
                     f"    NodeLearning: "
@@ -421,7 +264,6 @@ def main() -> None:
                     f"cusum_h={node_learning.cusum_h_:.4f}"
                 )
 
-            # ── Step 4: Evaluate all three variants on the same test set ──────
             res_a = evaluate_machine(mtype, mid, det_a,         splits, mimii_root)
             res_b = evaluate_machine(mtype, mid, det_b,         splits, mimii_root)
             res_f = evaluate_machine(mtype, mid, node_learning, splits, mimii_root)
@@ -430,17 +272,18 @@ def main() -> None:
                 print(f"    Evaluation skipped.\n")
                 continue
 
-            # ── Step 5: Inject plot metadata and save timeline PNGs ──────────
             _augment_result(res_a, f"mic{args.mic_a}  r={det_a.r_}", "Anomaly score  (NLL)")
             _augment_result(res_b, f"mic{args.mic_b}  r={det_b.r_}", "Anomaly score  (NLL)")
-            _augment_result(res_f, f"mic{args.mic_a}/mic{args.mic_b}  r={det_a.r_}/{det_b.r_}  node learning",
-                            "Anomaly score  (fused z-score)")
+            _augment_result(
+                res_f,
+                f"mic{args.mic_a}/mic{args.mic_b}  r={det_a.r_}/{det_b.r_}  node learning",
+                "Anomaly score  (fused z-score)",
+            )
 
             plot_machine(res_a, mtype, mid, dir_node_a)
             plot_machine(res_b, mtype, mid, dir_node_b)
             plot_machine(res_f, mtype, mid, dir_node_learning)
 
-            # ── Step 6: Collect results for YAML export ───────────────────────
             results_node_a[key]        = _collect_yaml_entry(res_a, det_a)
             results_node_b[key]        = _collect_yaml_entry(res_b, det_b)
             results_node_learning[key] = _collect_yaml_entry(res_f, node_learning)
@@ -481,29 +324,18 @@ def main() -> None:
                 },
             }
 
+            print(f"    Node A (r={det_a.r_}):   {_round_summary(res_a['round_results'])}")
+            print(f"    Node B (r={det_b.r_}):   {_round_summary(res_b['round_results'])}")
             print(
-                f"    Node A (r={det_a.r_}):   "
-                f"{_round_summary(res_a['round_results'])}"
-            )
-            print(
-                f"    Node B (r={det_b.r_}):   "
-                f"{_round_summary(res_b['round_results'])}"
-            )
-            print(
-                f"    NodeLearning:      "
-                f"{_round_summary(res_f['round_results'])}"
+                f"    NodeLearning:      {_round_summary(res_f['round_results'])}"
                 f"  [w_A={node_learning.w_a_:.3f} w_B={node_learning.w_b_:.3f}]"
             )
             print()
 
     if not comparison:
-        print(
-            "No results — check that MIMII data is present and the splits "
-            "manifest exists for this dataset."
-        )
+        print("No results — check that MIMII data and the splits manifest exist.")
         return
 
-    # ── Aggregate summary table ───────────────────────────────────────────────
     def _agg(rows: list[dict]) -> dict:
         det    = sum(r["det"]   for r in rows)
         total  = sum(r["total"] for r in rows)
@@ -527,7 +359,6 @@ def main() -> None:
     agg_f = _agg(rows_f)
 
     def _r_label(rows: list[dict]) -> str:
-        """Return the r value if all machines selected the same r, else 'search'."""
         unique = {str(row["r"]) for row in rows}
         return next(iter(unique)) if len(unique) == 1 else "search"
 
@@ -552,10 +383,9 @@ def main() -> None:
         f"{agg_f['det_rate']:<14}  {agg_f['fa_pct']:<8}  {agg_f['mean_delay']:<12}  {agg_f['mean_auc']}"
     )
     print(sep)
-    print(f"\nPlots   → {out_root}/{{node_a,node_b,node_learning}}/*.png")
-    print(f"Results → {out_root}/comparison.yaml\n")
+    print(f"\nPlots   -> {out_root}/{{node_a,node_b,node_learning}}/*.png")
+    print(f"Results -> {out_root}/comparison.yaml\n")
 
-    # ── Write YAMLs (overwrite on re-run) ─────────────────────────────────────
     for path, data in [
         (dir_node_a        / "results.yaml", results_node_a),
         (dir_node_b        / "results.yaml", results_node_b),

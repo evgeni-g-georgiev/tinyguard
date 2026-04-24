@@ -1,22 +1,10 @@
-// tinyml_gmm.ino — Two-node on-device Node Learning for anomaly detection.
+// Two-node on-device TWFR-GMM anomaly detector.
 //
-// State machine:  COLLECT → TRAIN → SYNC → MONITOR
+// State machine: COLLECT -> TRAIN -> SYNC -> MONITOR.
+// Flash NODE_A on one board and NODE_B on the other (see config.h).
 //
-//   COLLECT  Both nodes record N_TRAIN_CLIPS audio clips and extract features
-//            for all N_R_CANDIDATES r values simultaneously (full mel_buf used).
-//   TRAIN    Both nodes independently run r-search over {0,0.25,0.5,0.75,1},
-//            fit the winning GMM, and calibrate their CUSUM.
-//   SYNC     Nodes exchange val stats bidirectionally over BLE (30 s timeout).
-//            On success both calibrate the fused CUSUM (node_learning.h).
-//            On timeout each continues in solo mode — no HALT.
-//   MONITOR  Each clip: nodes exchange NLL scores over BLE and independently
-//            compute the fused alarm.  Falls back to local CUSUM if partner
-//            disconnects mid-session.
-//
-// Node identity is controlled by NODE_ID in config.h.
-// Flash Node A with NODE_ID=NODE_A, then Node B with NODE_ID=NODE_B.
-// Single-chip testing: flash either NODE_ID — SYNC times out after 30 s and
-// the node enters solo monitoring using only its own CUSUM.
+// Running a single board is supported: SYNC times out after 30 s and the
+// board continues in solo mode using only its local CUSUM.
 #include "config.h"
 #include "audio.h"
 #include "spectrogram.h"
@@ -26,11 +14,9 @@
 #include "node_learning.h"
 #include "ble.h"
 
-// ── Training feature matrix ───────────────────────────────────────────────────
-// [N_R_CANDIDATES][N_TRAIN_CLIPS][N_MELS] — 5 × 60 × 64 × 4 = 75 KB.
+// [N_R_CANDIDATES][N_TRAIN_CLIPS][N_MELS] — ~60 KB at the defaults.
 static float features[N_R_CANDIDATES][N_TRAIN_CLIPS][N_MELS];
 
-// ── Monitoring score history for rolling-window display ───────────────────────
 #define ROLLING_WINDOW  5
 static float score_history[ROLLING_WINDOW] = {0};
 static int   history_idx   = 0;
@@ -45,15 +31,13 @@ static float rolling_mean(float score) {
     return sum / history_count;
 }
 
-// ── Two-node state ────────────────────────────────────────────────────────────
-static ValDataPacket partner_pkt;        // val stats received from partner in SYNC
-static bool          ble_synced = false; // true → fused mode; false → solo mode
+static ValDataPacket partner_pkt;
+static bool          ble_synced = false;   // true in fused mode, false in solo mode
 
-// Per-candidate val NLL means from the r-search loop — kept alive through SYNC so
-// Node B can apply the diversity constraint without re-recording audio.
+// Per-candidate val NLL means, kept across SYNC so Node B can apply the
+// diversity constraint without re-recording audio.
 static float candidate_mu[N_R_CANDIDATES];
 
-// ── State machine ─────────────────────────────────────────────────────────────
 enum State { COLLECT, TRAIN, SYNC, MONITOR };
 static State state    = COLLECT;
 static int   clip_idx = 0;
@@ -83,14 +67,13 @@ void setup() {
 void loop() {
     switch (state) {
 
-    // ── COLLECT ───────────────────────────────────────────────────────────────
+    // ── COLLECT ──────────────────────────────────────────────────────────────
     case COLLECT: {
         if (!audio_read_hop()) break;
 
         bool clip_done = spectrogram_process_hop(pdm_buf);
 
         if (clip_done) {
-            // Extract features for all r candidates from the completed mel_buf.
             float clip_all_r[N_R_CANDIDATES][N_MELS];
             compute_all_r_features(clip_all_r);
             for (int r_idx = 0; r_idx < N_R_CANDIDATES; r_idx++)
@@ -110,7 +93,7 @@ void loop() {
         break;
     }
 
-    // ── TRAIN ─────────────────────────────────────────────────────────────────
+    // ── TRAIN ────────────────────────────────────────────────────────────────
     case TRAIN: {
         Serial.println("TRAIN phase — r-search...");
         digitalWrite(LED_BUILTIN, LOW);
@@ -128,7 +111,7 @@ void loop() {
             if (det_mu_val < best_mu) { best_mu = det_mu_val; best_r_idx = r_idx; }
         }
 
-        // Re-fit with the winning r to restore det_ globals for SYNC and MONITOR.
+        // Re-fit with the winning r so det_* globals are valid for SYNC and MONITOR.
         chosen_r = R_CANDIDATES[best_r_idx];
         Serial.print("Best r="); Serial.print(chosen_r, 2);
         Serial.print("  mu_val="); Serial.println(best_mu, 4);
@@ -141,10 +124,9 @@ void loop() {
         break;
     }
 
-    // ── SYNC ──────────────────────────────────────────────────────────────────
+    // ── SYNC ─────────────────────────────────────────────────────────────────
     case SYNC: {
 #if NODE_ID == NODE_A
-        // Publish our val stats; wait up to 30 s for Node B to write back.
         ble_publish_val_data(det_mu_val, det_sigma_val, det_val_nlls, chosen_r);
         Serial.println("SYNC — advertising, waiting for Node B (30 s)...");
 
@@ -171,9 +153,9 @@ void loop() {
         Serial.println("SYNC — connecting to Node A (30 s)...");
         if (ble_connect()) {
             if (ble_read_val_data(&partner_pkt)) {
-                // Diversity constraint: |r_B - r_A| >= 0.25 (mirrors Python train.py).
-                // If violated, find the best r from the constrained candidate set and
-                // re-train — features[5][60][64] is still in SRAM from TRAIN phase.
+                // Diversity constraint: |r_B - r_A| >= 0.25. If violated, pick the
+                // best constrained candidate from candidate_mu and re-train from
+                // the features still in SRAM.
                 {
                     float r_a = partner_pkt.chosen_r;
                     if (fabsf(chosen_r - r_a) < 0.25f) {
@@ -198,7 +180,6 @@ void loop() {
                     }
                 }
 
-                // Write our own val stats back to Node A (with final chosen_r).
                 ValDataPacket my_pkt;
                 my_pkt.mu_val    = det_mu_val;
                 my_pkt.sigma_val = det_sigma_val;
@@ -223,10 +204,8 @@ void loop() {
         break;
     }
 
-    // ── MONITOR ───────────────────────────────────────────────────────────────
+    // ── MONITOR ──────────────────────────────────────────────────────────────
     case MONITOR: {
-        // Poll BLE every iteration to keep the stack alive and process
-        // incoming writes (Node A) or notifications (Node B).
 #if NODE_ID == NODE_A
         ble_poll_nll_b();
 #else
@@ -238,7 +217,7 @@ void loop() {
         bool clip_done = spectrogram_process_hop(pdm_buf);
 
         if (clip_done) {
-            // Detect partner disconnect once per clip (avoids log spam).
+            // Drop to solo mode when the partner disconnects.
             if (ble_synced && !ble_is_connected()) {
 #if NODE_ID == NODE_A
                 Serial.println("[A] Node B disconnected — solo mode.");
@@ -305,5 +284,5 @@ void loop() {
         }
         break;
     }
-    } // switch
+    }
 }

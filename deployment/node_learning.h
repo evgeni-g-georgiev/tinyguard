@@ -1,24 +1,14 @@
-// node_learning.h — Fused CUSUM calibration and per-clip z-score fusion.
+// Two-node score fusion: fit-quality weights and CUSUM on fused val z-scores.
 //
-// Included by BOTH Node A and Node B. Each node receives the partner's val
-// stats over BLE during SYNC, then calls nl_calibrate() to set up the fused
-// CUSUM. During MONITOR each node sends its own NLL to the partner and calls
-// nl_update() once both NLLs are available.
-//
-// Mirrors gmm/node_learning.py exactly:
-//   weights     = softmax(-[mu_val_a, mu_val_b] / NL_TEMPERATURE)   (T=100)
-//   z_i(x)     = (NLL_i(x) - mu_val_i) / sigma_val_i
-//   fused_score = w_a * z_a + w_b * z_b
-//   CUSUM       = max(0, S + fused_score - cusum_k); alarm if S >= cusum_h
-//
-// Argument ordering: A always first, B always second in both nl_calibrate and nl_update.
+// nl_calibrate() is called once in SYNC after both nodes have finished their
+// local TRAIN phase; nl_update() is called once per clip in MONITOR with both
+// nodes' raw NLLs. Argument ordering is always (Node A, Node B).
 #pragma once
 #include <math.h>
 #include <string.h>
 #include <algorithm>
 #include "config.h"
 
-// Set by nl_calibrate() — read each clip in MONITOR by nl_update().
 static float nl_w_a             = 0.5f;
 static float nl_w_b             = 0.5f;
 static float nl_cusum_k         = 0.0f;
@@ -26,25 +16,19 @@ static float nl_cusum_h         = 1.0f;
 static float nl_cusum_S         = 0.0f;
 static float nl_cusum_S_display = 0.0f;
 
-// Call once in SYNC after both nodes have calibrated their GMMs.
-//   val_nlls_a[N_VAL_CLIPS], mu_a, sigma_a — Node A's val stats
-//   val_nlls_b[N_VAL_CLIPS], mu_b, sigma_b — Node B's val stats
-// Matches gmm/node_learning.py __init__() lines 183-205.
 inline void nl_calibrate(
     const float* val_nlls_a, float mu_a, float sigma_a,
     const float* val_nlls_b, float mu_b, float sigma_b)
 {
-    // Fit-quality softmax with temperature NL_TEMPERATURE.
-    // Lower val NLL std → more consistent node → higher weight.
-    float neg_mu_a = -sigma_a / NL_TEMPERATURE;
-    float neg_mu_b = -sigma_b / NL_TEMPERATURE;
-    float mx = neg_mu_a > neg_mu_b ? neg_mu_a : neg_mu_b;
-    float ea = expf(neg_mu_a - mx);
-    float eb = expf(neg_mu_b - mx);
+    // Fit-quality softmax over -sigma_val / T; lower sigma_val → higher weight.
+    float neg_sigma_a = -sigma_a / NL_TEMPERATURE;
+    float neg_sigma_b = -sigma_b / NL_TEMPERATURE;
+    float mx = neg_sigma_a > neg_sigma_b ? neg_sigma_a : neg_sigma_b;
+    float ea = expf(neg_sigma_a - mx);
+    float eb = expf(neg_sigma_b - mx);
     nl_w_a = ea / (ea + eb);
     nl_w_b = eb / (ea + eb);
 
-    // Fused val z-scores using both nodes' val NLLs.
     float fused_z[N_VAL_CLIPS];
     float fz_mean = 0.0f;
     for (int i = 0; i < N_VAL_CLIPS; i++) {
@@ -61,7 +45,6 @@ inline void nl_calibrate(
     }
     float fz_std = sqrtf(fz_var / N_VAL_CLIPS);
 
-    // 95th-percentile threshold on fused val z-scores (mirrors GMMDetector._calibrate).
     float sorted_z[N_VAL_CLIPS];
     memcpy(sorted_z, fused_z, sizeof(fused_z));
     std::sort(sorted_z, sorted_z + N_VAL_CLIPS);
@@ -78,9 +61,7 @@ inline void nl_calibrate(
     Serial.print("  cusum_h=");    Serial.println(nl_cusum_h, 4);
 }
 
-// Call once per clip in MONITOR when both nodes' NLLs are available.
-// Returns true when the fused CUSUM alarm fires.
-// A always first, B always second — matches nl_calibrate ordering.
+// Feed one pair of NLLs into the fused CUSUM; returns true when the alarm fires.
 inline bool nl_update(float nll_a, float mu_a, float sigma_a,
                       float nll_b, float mu_b, float sigma_b)
 {
