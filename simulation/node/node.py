@@ -1,142 +1,106 @@
-"""Node — a single simulated on-device anomaly detector.
-                                                                                    
-Each Node represents one physical machine (e.g. fan_id_00). It holds                  
-references to the shared frozen pipeline (preprocessor + embedder) and                
-owns its own separator instance which contains all trainable state.                   
-                                                                                    
-The Node is deliberately thin — it orchestrates the flow from raw audio               
-to anomaly score but contains no model logic itself.                                  
-"""                                                                                   
+"""Node — one physical detector (one mic channel, one GMMDetector).
+                                                                                                                                
+A Node is a thin data container:
+- identity: (machine_type, machine_id, channel, node_id)                                                                      
+- state:    a fitted gmm.detector.GMMDetector (owned)                                                                         
+- IO:       calibrate(fit_paths, val_paths) and score(wav_path, label)                                                        
+                                                                                                                                
+No preprocessor wrapper, no embedder, no separator abstraction.  load_log_mel                                                   
+and GMMDetector are called directly.  Everything the node "does" is a straight                                                  
+passthrough to gmm/.                                                                                                            
+"""                                                                                                                             
+                                                                                                                                
+from dataclasses import dataclass, field                                                                                        
+                
+import numpy as np
 
-import numpy as np 
+from gmm.config   import R_CANDIDATES                                                                                           
+from gmm.detector import GMMDetector
+from gmm.features import load_log_mel                                                                                           
+                
 
-from simulation.inference_models.base_frozen_embedder import BaseFrozenEmbedder       
-from simulation.inference_models.base_on_device_separator import BaseOnDeviceSeparator
-from simulation.node.base_topology import BaseTopology                                
-from simulation.node.base_merge import BaseMerge    
-
-
+@dataclass
 class Node:
+    # Identity
+    node_id:       str
+    machine_type:  str                                                                                                          
+    machine_id:    str
+    channel:       int        # 0..7 on MIMII                                                                                   
+                                                                                                                                
+    # GMM / detector hyperparameters (passthrough to GMMDetector)                                                               
+    n_mels:        int                                                                                                          
+    n_components:  int   = 2                                                                                                    
+    threshold_pct: float = 0.95
+    cusum_h_sigma: float = 5.0
+    cusum_h_floor: float = 1.0                                                                                                  
+    seed:          int   = 42
+                                                                                                                                
+    # Populated by calibrate()                                                                                                  
+    detector: GMMDetector | None = None
+                                                                                                                                
+    # Per-timestep log (used by reporting / plotting)                                                                           
+    scores:  list[float] = field(default_factory=list)
+    labels:  list[int]   = field(default_factory=list)                                                                          
+    cusum_S: list[float] = field(default_factory=list)
+    alarms:  list[bool]  = field(default_factory=list)                                                                          
 
-    def __init__(
-        self,
-        node_id: str,                                                                 
-        machine_type: str,
-        machine_id: str,                                                              
-        preprocessor,                                                               
-        frozen_embedder: BaseFrozenEmbedder,
-        separator: BaseOnDeviceSeparator,                                             
-        topology: BaseTopology,
-        merge: BaseMerge,     
-        manual_reset: bool = False,                                                        
-    ):                                                                              
-        self.node_id = node_id
-        self.machine_type = machine_type
-        self.machine_id = machine_id
-        self.preprocessor = preprocessor                                              
-        self.frozen_embedder = frozen_embedder
-        self.separator = separator                                                    
-        self.topology = topology                                                    
-        self.merge = merge
-        self.manual_reset = manual_reset
+    # ── Calibration ───────────────────────────────────────────────────────                                                    
+    def calibrate(self, fit_paths: list[str], val_paths: list[str]) -> None:
+        """Per-node r-search; keep the detector with lowest mean val NLL.                                                       
+                                                                                                                                
+        No diversity constraint between peers — that's a deferred feature.
+        """                                                                                                                     
+        fit_mels = [load_log_mel(p, n_mels=self.n_mels, channel=self.channel)
+                    for p in fit_paths]                                                                                         
+        val_mels = [load_log_mel(p, n_mels=self.n_mels, channel=self.channel)
+                    for p in val_paths]                                                                                         
 
-        self.scores: list[float] = []                                                 
-        self.labels: list[int] = []
-        self.predictions: list[int | None] = []
-        self.state_predictions: list[int |None] = []
+        best: GMMDetector | None = None                                                                                         
+        for r in R_CANDIDATES:
+            det = GMMDetector(                                                                                                  
+                r             = r,
+                n_components  = self.n_components,                                                                              
+                threshold_pct = self.threshold_pct,
+                cusum_h_sigma = self.cusum_h_sigma,
+                cusum_h_floor = self.cusum_h_floor,                                                                             
+                n_mels        = self.n_mels,
+                seed          = self.seed,                                                                                      
+            )                                                                                                                   
+            det.fit(fit_mels, val_mels)
+            if best is None or det.mu_val_ < best.mu_val_:                                                                      
+                best = det
+        self.detector = best
 
-        # Internal state for manual-reset mode (circuit-breaker for anomoly dection)
-        # _alarm_held is cleared by reset_state() at the engineer-reset moment. 
-        # _prev_label is read/written by the lockstep loop to detect block 
-        # transitions (anomaly block -> normal region). 
-        self._alarm_held: bool = False 
-        self._prev_label: int | None = None 
-    
-    def _wav_to_embedding(self, wav_path: str) -> np.ndarray:                       
-        """Run the frozen pipeline: wav -> preprocessor -> embedder -> embedding."""
-        preprocessed_audio = self.preprocessor.process(wav_path)                      
-        embedding = self.frozen_embedder.embed(preprocessed_audio)
-        return embedding   
-    
+    # ── Scoring ───────────────────────────────────────────────────────────                                                    
+    def score(self, wav_path: str, label: int) -> tuple[float, bool]:
+        """Load clip, compute NLL, advance CUSUM, append traces."""                                                             
+        log_mel = load_log_mel(wav_path, n_mels=self.n_mels, channel=self.channel)                                              
+        nll   = self.detector.score(log_mel)   
 
-    def warmup(self, clip_paths: list[str]) -> None:
-        """Calibrate the separator on warmup clips.
-
-        Runs each clip through the frozen pipeline, then passes all
-        resulting embeddings to the separator for calibration (e.g.
-        SVDD centroid computation, GMM fitting).
-
-        Args:
-            clip_paths: Paths to warmup .wav files.
-        """
-        warmup_embeddings = [
-            self._wav_to_embedding(path) for path in clip_paths
-        ]
-        self.separator.calibrate(warmup_embeddings)
-
-    def process_clip(self, wav_path: str, label: int) -> tuple[float, int | None]:
-        """Process a single test clip: embed, score, predict, record.                               
-                                                                                                    
-        Returns:                                                                                    
-            (score, predicted_label) where predicted_label is 1 if the                              
-            score exceeds the separator's threshold, 0 if below, or None                            
-            if the separator does not expose a threshold.                                           
-        """                                                                                         
-        embedding = self._wav_to_embedding(wav_path)                                                
-        score = self.separator.score(embedding)     
-                                                                                                    
-        threshold = getattr(self.separator, "threshold", None)
-        predicted_label = int(score > threshold) if threshold is not None else None    
-
-        # ── State prediction (held open i manual-reset mode) ────────────────────────────────────────────────────────             
-        state_pred = self._compute_state(score, threshold) 
-                                                                                    
-        self.scores.append(score)                                                                   
-        self.labels.append(label)                                                                   
-        self.predictions.append(predicted_label)
-        self.state_predictions.append(state_pred)
-                                                                                                    
-        return score, predicted_label  
-    
-
-    def _compute_state(self,
-                       score: float,
-                       threshold: float | None,
-    ) -> int | None:
-        """Compute the state prediction for this clip.
-
-        Delegates the raw "is this clip an anomaly state?" decision to
-        separator.state(score). In manual_reset mode, once the separator
-        has ever fired in the current window the Node holds the alarm
-        high until reset_state() is called — i.e. the node behaves like                          
-        a circuit breaker that needs a manual reset to clear.
-                                                                                                
-        In the default (non-manual-reset) mode, the state simply mirrors
-        whatever separator.state(score) returns on each clip.                                    
-        """                                                                                      
-        if threshold is None:                                                                    
-            return None                                                                          
-        raw_state = self.separator.state(score)
-        if not self.manual_reset:
-            return raw_state                                                                     
-        if raw_state == 1:
-            self._alarm_held = True                                                              
-        return 1 if self._alarm_held else 0
-    
-    def reset_state(self) -> None:                                               
-        """Clear the held alarm (manual-reset engineer action).                                  
-                                                                                                
-        Called by the lockstep loop on the first normal clip after an
-        anomaly block when manual_reset mode is on. Clears the Node's                            
-        own alarm-held flag and delegates to separator.reset_state() so                          
-        any stateful separator override (e.g. future EWMA) can clear                             
-        its accumulators at the same moment.                                                     
-        """                                                                                      
-        self._alarm_held = False                                                                 
-        self.separator.reset_state()                                                             
-                  
-
-
-    def get_neighbours(self) -> list[str]:
-        """Return IDs of nodes this node can communicate with."""
-        return self.topology.neighbours(self.node_id)
+        d   = self.detector 
+        new_S = max(0.0, d._cusum_S + nll - d.cusum_k_)                                                                               
+        alarm = new_S >= d.cusum_h_
+        d._cusum_S = 0.0 if alarm else new_S                                                                                 
+                                                                                                                                
+        self.scores.append(nll)
+        self.labels.append(label)
+        self.cusum_S.append(new_S)                                                                             
+        self.alarms.append(alarm)
+        return nll, alarm                                                                                                       
+                
+    def cusum_reset(self) -> None:                                                                                              
+        self.detector.cusum_reset()
+                                                                                                                                
+    # ── Convenience passthroughs (used by Group + reporting) ──────────────                                                    
+    @property
+    def r(self) -> float:             return self.detector.r_                                                                   
+    @property   
+    def k(self) -> float:             return self.detector.cusum_k_
+    @property                                                                                                                   
+    def h(self) -> float:             return self.detector.cusum_h_
+    @property                                                                                                                   
+    def mu_val(self) -> float:        return self.detector.mu_val_
+    @property                                                                                                                   
+    def sigma_val(self) -> float:     return self.detector.sigma_val_
+    @property                                                                                                                   
+    def val_nlls(self) -> np.ndarray: return self.detector.val_nlls_

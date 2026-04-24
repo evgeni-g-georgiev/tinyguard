@@ -26,6 +26,7 @@ tinyml_env/
 /data/mimii_6db/
 /data/archives/
 /data/tmp/
+/data/mimii/
 
 # Output results
 simulation/outputs/
