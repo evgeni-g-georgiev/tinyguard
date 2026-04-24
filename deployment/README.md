@@ -53,11 +53,11 @@ Each board runs `COLLECT -> TRAIN -> SYNC -> MONITOR`:
 
 ## Memory budget
 
-With `N_MELS = 64`, `N_FRAMES = 312`, `N_R_CANDIDATES = 5`,
+With `N_MELS = 64`, `N_FRAMES = 312`, `N_R_CANDIDATES = 4`,
 `N_TRAIN_CLIPS = 60`:
 
 ```
-features[5][60][64]  = 75 KB
+features[4][60][64]  = 60 KB
 mel_buf[64][312]     = 78 KB
 FFT scratch          = 12 KB
 GMM state + misc     = a few KB

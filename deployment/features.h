@@ -5,7 +5,7 @@
 #include "config.h"
 #include "spectrogram.h"
 
-static const float R_CANDIDATES[N_R_CANDIDATES] = {0.0f, 0.25f, 0.5f, 0.75f, 1.0f};
+static const float R_CANDIDATES[N_R_CANDIDATES] = {0.5f, 0.7f, 0.9f, 1.0f};
 
 // Set to R_NODE at boot; overwritten after the TRAIN-phase r-search.
 static float chosen_r = R_NODE;

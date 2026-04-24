@@ -125,5 +125,5 @@ C++ [deployment/config.h](deployment/config.h) mirrors. Defaults:
 - 60 training clips per machine (50 fit + 10 calibration)
 - 2-component diagonal GMM
 - CUSUM threshold at the 95th percentile of val NLLs
-- r-search grid `{0.0, 0.25, 0.5, 0.75, 1.0}`
+- r-search grid `{0.5, 0.7, 0.9, 1.0}`
 - Fusion temperature `T = 100`

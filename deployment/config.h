@@ -48,7 +48,7 @@
 // ── Node Learning ────────────────────────────────────────────────────────────
 #define SIGMA_FLOOR     1e-8f
 #define NL_TEMPERATURE  100.0f
-#define N_R_CANDIDATES  5       // r grid: {0.0, 0.25, 0.5, 0.75, 1.0}
+#define N_R_CANDIDATES  4       // r grid: {0.5, 0.7, 0.9, 1.0}
 
 // ── BLE ──────────────────────────────────────────────────────────────────────
 #define ENABLE_BLE      1

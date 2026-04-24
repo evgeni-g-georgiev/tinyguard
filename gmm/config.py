@@ -43,7 +43,7 @@ CUSUM_H_FLOOR   = 1.0
 SEED            = 42
 
 # r-search grid for --r-search
-R_CANDIDATES    = [0.0, 0.25, 0.5, 0.75, 1.0]
+R_CANDIDATES    = [0.5, 0.7, 0.9, 1.0]
 
 # Fixed r values for single-run mode (no r-search)
 NODE_R_A        = 1.0

@@ -14,7 +14,7 @@
 #include "node_learning.h"
 #include "ble.h"
 
-// [N_R_CANDIDATES][N_TRAIN_CLIPS][N_MELS] — ~75 KB at the defaults.
+// [N_R_CANDIDATES][N_TRAIN_CLIPS][N_MELS] — ~60 KB at the defaults.
 static float features[N_R_CANDIDATES][N_TRAIN_CLIPS][N_MELS];
 
 #define ROLLING_WINDOW  5
