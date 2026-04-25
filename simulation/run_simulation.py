@@ -1,28 +1,28 @@
-"""Orchestrator — reads YAML, builds nodes + groups, runs lockstep.                                                             
-                                                                                                                                
-No registries, no builders module.  Construction is a flat pass over config.                                                    
-                                                                                                                                
-Usage:          
-    python -m simulation.run_simulation                                                                                         
-    python -m simulation.run_simulation --config simulation/configs/default.yaml                                                
+"""Orchestrator — reads YAML, builds nodes + groups, runs lockstep.
+
+No registries, no builders module.  Construction is a flat pass over config.
+
+Usage:
+    python -m simulation.run_simulation
+    python -m simulation.run_simulation --config simulation/configs/default.yaml
 """
-                                                                                                                                
-import argparse 
+
+import argparse
 import time
 from pathlib import Path
-                                                                                                                                
+
 import yaml
-                                                                                                                                
+
 from simulation                         import lockstep
 from simulation.data.simulation_loader  import load_all_timelines
-from simulation.formatters              import format_step, print_results                                                       
+from simulation.formatters              import format_step, print_results
 from simulation.node.node               import Node
-from simulation.node.group              import Group                                                                            
-from simulation.reporting               import (                                                                                
+from simulation.node.group              import Group
+from simulation.reporting               import (
     make_run_dir, save_results, save_plots, save_latent_plots,
-)                                                                                                                               
-                                                                                                                                
-                                                                                                                                
+)
+
+
 VALID_SNRS = ("6dB", "0dB", "-6dB")
 
 # Maps display SNR ("-6dB") to on-disk mimii dir suffix ("neg6db"). The splits
@@ -60,19 +60,21 @@ def _resolve_channels(config: dict) -> list[int]:
         raise ValueError(f"every channel must be an int in 0..7, got {channels!r}")
     if len(set(channels)) != len(channels):
         raise ValueError(f"channels must be unique, got {channels!r}")
-    return channels                                                                                                                  
-                
-                                                                                                                                
+    return channels
+
+
 # ── Build nodes + groups ────────────────────────────────────────────────
 
 def build_nodes_and_groups(
     config: dict,
 ) -> tuple[dict[str, list[Node]], dict[str, list[Group]]]:
     """Flat construction of all nodes and (if len(channels) > 1) their groups."""
-    data     = config["data"]
-    gmm_cfg  = config["gmm"]
-    channels = _resolve_channels(config)
-    temp     = config["temperature"]
+    data         = config["data"]
+    gmm_cfg      = config["gmm"]
+    sim_cfg      = config["simulation"]
+    channels     = _resolve_channels(config)
+    temp         = config["temperature"]
+    manual_reset = sim_cfg.get("manual_reset", False)
 
     nodes_by_type:  dict[str, list[Node]]  = {mt: [] for mt in data["machine_types"]}
     groups_by_type: dict[str, list[Group]] = {mt: [] for mt in data["machine_types"]}
@@ -90,6 +92,7 @@ def build_nodes_and_groups(
                     cusum_h_sigma = gmm_cfg["cusum_h_sigma"],
                     cusum_h_floor = gmm_cfg["cusum_h_floor"],
                     seed          = gmm_cfg["seed"],
+                    manual_reset  = manual_reset,
                 )
                 for ch in channels
             ]
@@ -103,115 +106,157 @@ def build_nodes_and_groups(
                     temperature   = temp,
                     cusum_h_sigma = gmm_cfg["cusum_h_sigma"],
                     cusum_h_floor = gmm_cfg["cusum_h_floor"],
+                    manual_reset  = manual_reset,
                 ))
 
     return nodes_by_type, groups_by_type
 
-                                                                                                                                
-# ── Main ─────────────────────────────────────────────────────────────────
-                                                                                                                                
-def main(config_path: str = "simulation/configs/default.yaml") -> None:                                                         
-    with open(config_path) as f:
-        config = yaml.safe_load(f)                                                                                              
-                
+
+# ── Orchestration ────────────────────────────────────────────────────────
+
+def run_with_config(
+    config:         dict,
+    config_path:    Path | None = None,
+    save_artefacts: bool        = True,
+    verbose_steps:  bool        = True,
+) -> dict:
+    """Run one simulation from an in-memory config dict.
+
+    Parameters
+    ----------
+    config : dict
+        Resolved-or-not config; this function calls _resolve_snr() so paths
+        with {snr} placeholders get expanded in place.  Idempotent.
+    config_path : Path | None
+        Original config path, used only by save_results for provenance.
+    save_artefacts : bool
+        If False, skips run_dir, results.json, plots, latent plots.
+    verbose_steps : bool
+        If False, suppresses the per-step format_step print and print_results.
+
+    Returns
+    -------
+    dict with keys: nodes_by_type, groups_by_type, runtime_seconds, run_dir.
+    """
     sim      = config["simulation"]
     data     = config["data"]
     snr      = _resolve_snr(config)
     channels = _resolve_channels(config)
     config["channels"] = channels   # normalise so downstream sees a canonical list
 
-    print(f"Config:     {config_path}")
-    print(f"SNR:        {snr}")
-    print(f"Channels:   {channels}  (n={len(channels)})")
-    print(f"GMM:        n_mels={config['gmm']['n_mels']}"
-        f"  n_components={config['gmm']['n_components']}")
-    print(f"Fusion T:   {config['temperature']}")
-    print(f"Shuffle:    {sim['shuffle_mode']}")
-    print(f"Warmup:     {sim['warmup_count']}")
-    print()                                                                                                                     
-                
-    run_dir = make_run_dir()                                                                                                    
-    print(f"Run directory: {run_dir}\n")
-                                                                                                                                
+    if verbose_steps:
+        print(f"SNR:        {snr}")
+        print(f"Channels:   {channels}  (n={len(channels)})")
+        print(f"GMM:        n_mels={config['gmm']['n_mels']}"
+              f"  n_components={config['gmm']['n_components']}")
+        print(f"Fusion T:   {config['temperature']}")
+        print(f"Shuffle:    {sim['shuffle_mode']}")
+        print(f"Warmup:     {sim['warmup_count']}")
+        print()
+
+    run_dir = make_run_dir() if save_artefacts else None
+    if run_dir is not None and verbose_steps:
+        print(f"Run directory: {run_dir}\n")
+
     start = time.time()
-                                                                                                                                
-    # Auto-split if splits dir is missing.                                                                                      
+
+    # Auto-split if splits dir is missing.
     splits_dir = Path(data["splits_dir"])
-    if not splits_dir.exists():                                                                                                 
+    if not splits_dir.exists():
         print(f"Splits dir missing: {splits_dir}")
-        print(f"Running split_data for snr={snr}...")                                                                           
-        from simulation.data.split_data import split_data                                                                       
-        try:                                                                                                                    
-            split_data(                                                                                                         
+        print(f"Running split_data for snr={snr}...")
+        from simulation.data.split_data import split_data
+        try:
+            split_data(
                 mimii_root=Path(data["mimii_root"]),
-                splits_dir=splits_dir,                                                                                          
+                splits_dir=splits_dir,
                 machine_types=data["machine_types"],
-            )                                                                                                                   
+            )
         except FileNotFoundError as e:
             raise FileNotFoundError(
-                f"Cannot auto-split: {e}\n"                                                                                     
+                f"Cannot auto-split: {e}\n"
                 f"Raw MIMII data for snr={snr} is missing. "
-                f"Run: python data/download_mimii.py --snr {snr}"                                                               
-            ) from e                                                                                                            
-                                                                                                                                
-    # Load shuffled timelines, one per (mtype, mid).                                                                            
+                f"Run: python data/download_mimii.py --snr {snr}"
+            ) from e
+
     timelines_by_type = load_all_timelines(
-        splits_dir     = splits_dir,                                                                                            
+        splits_dir     = splits_dir,
         machine_types  = data["machine_types"],
-        machine_ids    = data["machine_ids"],                                                                                   
+        machine_ids    = data["machine_ids"],
         warmup_count   = sim["warmup_count"],
-        shuffle_mode   = sim["shuffle_mode"],                                                                                   
+        shuffle_mode   = sim["shuffle_mode"],
         seed           = sim["seed"],
         block_size     = sim.get("block_size", 5),
-        block_interval = sim.get("block_interval", 20),                                                                         
+        block_interval = sim.get("block_interval", 20),
     )
-                                                                                                                                
-    # Build nodes + groups.
+
     nodes_by_type, groups_by_type = build_nodes_and_groups(config)
 
-    # Run lockstep.
-    print("Legend:  · TN   ✓ TP   ✗ FN (missed)   ! FP (false alarm)\n")
-    for step in lockstep.run(nodes_by_type, groups_by_type, timelines_by_type):                                                 
-        print(format_step(step, data["machine_types"]))                                                                         
-                                                                                                                                
-    # Print summary tables.                                                                                                     
-    print_results(nodes_by_type, groups_by_type)
-                                                                                                                                
-    runtime = time.time() - start                                                                                               
+    if verbose_steps:
+        print("Legend:  · TN   ✓ TP   ✗ FN (missed)   ! FP (false alarm)\n")
 
-    # Save artefacts.                                                                                                           
-    print(f"\nSaving run artefacts to {run_dir}")
-    save_results(                                                                                                               
-        nodes_by_type   = nodes_by_type,
-        groups_by_type  = groups_by_type,                                                                                       
-        config          = config,                                                                                               
-        config_path     = Path(config_path),
-        runtime_seconds = runtime,                                                                                              
-        run_dir         = run_dir,
-    )                                                                                                                           
-    save_plots(
-        nodes_by_type   = nodes_by_type,                                                                                        
-        groups_by_type  = groups_by_type,
-        config          = config,
-        run_dir         = run_dir,
-    )                                                                                                                           
-    if config.get("latent_plot", {}).get("enabled", False):
-        save_latent_plots(                                                                                                      
-            nodes_by_type     = nodes_by_type,
-            timelines_by_type = timelines_by_type,                                                                              
-            config            = config,
-            run_dir           = run_dir,                                                                                        
+    for step in lockstep.run(nodes_by_type, groups_by_type, timelines_by_type):
+        if verbose_steps:
+            print(format_step(step, data["machine_types"]))
+
+    if verbose_steps:
+        print_results(nodes_by_type, groups_by_type)
+
+    runtime = time.time() - start
+
+    if save_artefacts:
+        print(f"\nSaving run artefacts to {run_dir}")
+        save_results(
+            nodes_by_type   = nodes_by_type,
+            groups_by_type  = groups_by_type,
+            config          = config,
+            config_path     = config_path,
+            runtime_seconds = runtime,
+            run_dir         = run_dir,
         )
-                                                                                                                                
-    print(f"Done.  Runtime: {runtime:.1f}s")
+        save_plots(
+            nodes_by_type   = nodes_by_type,
+            groups_by_type  = groups_by_type,
+            config          = config,
+            run_dir         = run_dir,
+        )
+        if config.get("latent_plot", {}).get("enabled", False):
+            save_latent_plots(
+                nodes_by_type     = nodes_by_type,
+                timelines_by_type = timelines_by_type,
+                config            = config,
+                run_dir           = run_dir,
+            )
+        print(f"Done.  Runtime: {runtime:.1f}s")
 
-                                                                                                                                
+    return {
+        "nodes_by_type":   nodes_by_type,
+        "groups_by_type":  groups_by_type,
+        "runtime_seconds": runtime,
+        "run_dir":         run_dir,
+    }
+
+
+# ── Main ─────────────────────────────────────────────────────────────────
+
+def main(config_path: str = "simulation/configs/default.yaml") -> None:
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+    print(f"Config:     {config_path}")
+    run_with_config(
+        config,
+        config_path    = Path(config_path),
+        save_artefacts = True,
+        verbose_steps  = True,
+    )
+
+
 if __name__ == "__main__":
-    p = argparse.ArgumentParser(description="Run lockstep simulation")                                                          
+    p = argparse.ArgumentParser(description="Run lockstep simulation")
     p.add_argument(
-        "--config",                                                                                                             
+        "--config",
         default="simulation/configs/default.yaml",
-        help="Path to simulation config YAML",                                                                                  
-    )           
+        help="Path to simulation config YAML",
+    )
     args = p.parse_args()
-    main(config_path=args.config)         
+    main(config_path=args.config)

@@ -30,6 +30,7 @@ _COL_BAND  = "lightcoral"
 _COL_S_T   = "#555555"
 _COL_DET   = "forestgreen"                                                            
 _COL_MISS  = "crimson"
+_COL_UNFLAG = "royalblue" 
                                                                                     
                                                                                     
 # ── Anomaly-band + bracket helpers ───────────────────────────────────────
@@ -49,40 +50,93 @@ def _anomaly_bands(labels) -> list[tuple[int, int]]:
     return runs                                                                       
 
                                                                                     
-def _bracket_data(labels, alarms) -> dict | None:
-    """Per-band detection outcome driven by CUSUM alarm bools.
-                                                                                    
-    Returns {"bands": [(start,end)...], "lags": [None|int, ...]}:
-    lag is None if no alarm fired during the band, else (first_alarm_idx - start).  
-    """                                                                               
-    bands = _anomaly_bands(labels)                                                    
-    if not bands:                                                                     
+def _bracket_data(labels, state, manual_reset: bool) -> dict | None:
+    """Per-band detection outcome driven by the state trace.                                  
+
+    Returns a dict with parallel lists aligned to each anomaly band::                         
+                                                                                            
+        bands   : [(start, end_inclusive), ...]
+        lags    : None if state never went 1 in the band, else                                
+                first_alarm_index − band_start  (green bracket width)
+        unflags : None in manual_reset mode OR for a missed band OR if the                    
+                timeline ends before state returns to 0.  Otherwise the                     
+                number of clips after band_end until state[i] == 0                          
+                (blue bracket width).                                                       
+                                                                                            
+    `state` is the post-processed 0/1 trace (Node.state / Group.state), which                 
+    in auto mode (`manual_reset=False`) equals the per-clip CUSUM alarm, and                  
+    in manual-reset mode stays latched at 1 until `state_reset()` fires at                    
+    the next normal-band boundary.                                                            
+    """                                                                                       
+    state = [int(s) for s in state]                                                           
+    bands = _anomaly_bands(labels)                                                            
+    if not bands:
         return None
-    lags = []
+                                                                                            
+    lags:    list[int | None] = []
+    unflags: list[int | None] = []                                                            
     for (start, end) in bands:
-        fired = next((i for i in range(start, end + 1) if alarms[i]), None)           
-        lags.append(None if fired is None else fired - start)
-    return {"bands": bands, "lags": lags}                                             
+        fired = next((i for i in range(start, end + 1) if state[i] == 1), None)
+        lags.append(None if fired is None else fired - start)                                 
+
+        if fired is None or manual_reset or end + 1 >= len(state):                            
+            unflags.append(None)
+        else:                                                                                 
+            first_normal = next(
+                (j - (end + 1)
+                for j in range(end + 1, len(state)) if state[j] == 0),
+                None,                                                                         
+            )
+            unflags.append(first_normal)                                                      
+                
+    return {"bands": bands, "lags": lags, "unflags": unflags}                                        
                 
                                                                                     
-def _draw_brackets(ax, bracket_data: dict) -> None:
-    """Green bar = caught block (band start → alarm index); red bar = missed."""      
-    trans = blended_transform_factory(ax.transData, ax.transAxes)                     
-    y = 0.97                                                                          
-    labeled_det = labeled_miss = False                                                
-    for (start, end), lag in zip(bracket_data["bands"], bracket_data["lags"]):        
-        if lag is None:                                                               
-            label = None if labeled_miss else "Missed block"                          
-            labeled_miss = True                                                       
-            ax.plot([start - 0.5, end + 0.5], [y, y],
-                    color=_COL_MISS, linewidth=3, solid_capstyle="butt",              
-                    transform=trans, label=label)
-        else:                                                                         
-            label = None if labeled_det else "Detection lag"
-            labeled_det = True                                                        
-            ax.plot([start - 0.5, start + lag + 0.5], [y, y],
-                    color=_COL_DET, linewidth=3, solid_capstyle="butt",               
-                    transform=trans, label=label)                                     
+def _draw_brackets(ax, bracket_data: dict) -> None:                                           
+    """Draw outcome brackets above anomaly bands.
+                                                                                            
+    Green  (y=0.97): detection lag — from band start to first alarm.
+    Red    (y=0.97): missed block  — no state=1 anywhere in the band.                       
+    Blue   (y=0.93): return-to-normal lag — from band end to first                          
+                        state=0 clip (only in auto mode, detected bands).                      
+    """                                                                                       
+    trans = blended_transform_factory(ax.transData, ax.transAxes)                             
+    y_detect, y_unflag = 0.97, 0.93                                                           
+                
+    labeled_det = labeled_miss = labeled_unflag = False                                       
+    bands   = bracket_data["bands"]
+    lags    = bracket_data["lags"]                                                            
+    unflags = bracket_data.get("unflags", [None] * len(bands))
+                                                                                            
+    for (start, end), lag, unflag in zip(bands, lags, unflags):                               
+        if lag is None:                                                                       
+            label = None if labeled_miss else "Missed block"                                  
+            labeled_miss = True
+            ax.plot(
+                [start - 0.5, end + 0.5], [y_detect, y_detect],
+                color=_COL_MISS, linewidth=3, solid_capstyle="butt",                          
+                transform=trans, label=label,
+            )                                                                                 
+            continue                                                                          
+
+        # Green — detection lag                                                               
+        label = None if labeled_det else "Detection lag"
+        labeled_det = True                                                                    
+        ax.plot(
+            [start - 0.5, start + lag + 0.5], [y_detect, y_detect],                           
+            color=_COL_DET, linewidth=3, solid_capstyle="butt",
+            transform=trans, label=label,                                                     
+        )
+                                                                                            
+        # Blue — return-to-normal lag (auto mode only, caught blocks only)                    
+        if unflag is not None:
+            label = None if labeled_unflag else "Return-to-normal lag"                        
+            labeled_unflag = True
+            ax.plot(                                                                          
+                [end + 0.5, end + 1 + unflag + 0.5], [y_unflag, y_unflag],
+                color=_COL_UNFLAG, linewidth=3, solid_capstyle="butt",                        
+                transform=trans, label=label,                                                 
+            )                                   
                                                                                     
                                                                                     
 # ── Stat helpers ─────────────────────────────────────────────────────────
@@ -108,26 +162,35 @@ def _rate_stats(labels, alarms) -> dict:
     }
                                                                                     
                                                                                     
-def _format_full_title(header: str, labels, scores, alarms, bracket_data) -> str:
-    """Two-line title with detection / false-alarm rate, AUC, and per-band lag."""
-    rates = _rate_stats(labels, alarms)                                               
+def _format_full_title(
+    header: str, labels, scores, alarms, bracket_data,
+) -> str:
+    """Two-line title.  Detection / false-alarm / AUC driven by alarms
+    (clip-level); Lag / Unflag / Miss driven by the state-based brackets."""
+    rates = _rate_stats(labels, alarms)
     auc   = _auc(labels, scores)
-                                                                                    
-    det_str = f"{rates['det']*100:.1f}%" if rates["det"] is not None else "N/A"       
-    fa_str  = f"{rates['fa'] *100:.1f}%" if rates["fa"]  is not None else "N/A"       
-    auc_str = f"{auc:.4f}"              if auc is not None else "N/A"                 
-                
-    lag_suffix = ""                                                                   
+
+    det_str = f"{rates['det']*100:.1f}%" if rates["det"] is not None else "N/A"
+    fa_str  = f"{rates['fa'] *100:.1f}%" if rates["fa"]  is not None else "N/A"
+    auc_str = f"{auc:.4f}"               if auc is not None else "N/A"
+
+    lag_suffix = ""
     if bracket_data is not None and bracket_data["bands"]:
-        lags   = bracket_data["lags"]                                                 
-        caught = [l for l in lags if l is not None]                                   
-        missed = len(lags) - len(caught)
-        lag_part = f"Lag={np.mean(caught):.1f} clips" if caught else "Lag=N/A"        
-        lag_suffix = f"  |  {lag_part}  ({missed}/{len(lags)} missed)"                
-                                                                                    
-    return (f"{header}\n"                                                             
-            f"Detection={det_str}  |  False alarm={fa_str}  |  "                      
-            f"AUC={auc_str}{lag_suffix}")                                             
+        lags    = bracket_data["lags"]
+        unflags = bracket_data.get("unflags", [])
+
+        caught   = [l for l in lags if l is not None]
+        unflag_n = [u for u in unflags if u is not None]
+        missed   = len(lags) - len(caught)
+
+        lag_part = f"Lag={np.mean(caught):.1f}" if caught else "Lag=N/A"
+        if unflag_n:
+            lag_part += f"  Unflag={np.mean(unflag_n):.1f}"
+        lag_suffix = f"  |  {lag_part}  ({missed}/{len(lags)} missed)"
+
+    return (f"{header}\n"
+            f"Detection={det_str}  |  False alarm={fa_str}  |  "
+            f"AUC={auc_str}{lag_suffix}")
 
                                                                                     
 def _compact_title(head: str, labels, scores, bracket_data) -> str:
@@ -142,137 +205,178 @@ def _compact_title(head: str, labels, scores, bracket_data) -> str:
                                                                                     
 # ── Per-node axes ────────────────────────────────────────────────────────           
                 
-def _draw_node_axes(ax, node: Node, config: dict, compact: bool = False) -> None:     
-    """One node's scatter + bands + k/h lines + S_t overlay + brackets + title."""
-    t       = np.arange(len(node.scores))                                             
-    scores  = np.asarray(node.scores)                                                 
-    labels  = np.asarray(node.labels)                                                 
-    alarms  = node.alarms                                                             
-                                                                                    
-    plot_cfg = config.get("plot", {})
-                                                                                    
-    # Anomaly injection shading
-    show_bands = config.get("simulation", {}).get("shuffle_mode", "random") \
-                    in ("block_random", "block_fixed")                                
-    bracket_data = _bracket_data(list(labels), alarms) if show_bands else None        
-    if bracket_data is not None:                                                      
-        for i, (start, end) in enumerate(bracket_data["bands"]):                      
-            ax.axvspan(start - 0.5, end + 0.5, alpha=0.18, color=_COL_BAND,
-                        label="Anomaly injection" if i == 0 else None)                 
-                                                                                    
-    # Normal / anomaly scatter                                                        
-    nm, am = labels == 0, labels == 1                                                 
-    ax.scatter(t[nm], scores[nm], s=18, c=_COL_NORM, alpha=0.7,                       
-                label="Normal clips", zorder=3)                                        
-    ax.scatter(t[am], scores[am], s=18, c=_COL_ANOM, alpha=0.7,                       
-                label="Anomaly clips", zorder=3)                                       
+def _draw_node_axes(ax, node: Node, config: dict, compact: bool = False) -> None:             
+    """One node's scatter + bands + k/h lines + S_t overlay + brackets + title.
+                                                                                            
+    Brackets are driven by node.state (the latched/passthrough trace), so
+    detection / missed / return-to-normal outcomes honour manual_reset.                       
+    Clip-level AUC / detection-rate / FA-rate still come from node.alarms.                    
+    """                                                                                       
+    t       = np.arange(len(node.scores))                                                     
+    scores  = np.asarray(node.scores)                                                         
+    labels  = np.asarray(node.labels)                                                         
+    alarms  = node.alarms                                                                     
+                                                                                            
+    plot_cfg = config.get("plot", {})                                                         
+
+    # Anomaly-injection shading + bracket outcomes.                                           
+    show_bands = (
+        config.get("simulation", {}).get("shuffle_mode", "random")                            
+        in ("block_random", "block_fixed")                                                    
+    )                                                                                         
+    bracket_data = (                                                                          
+        _bracket_data(list(labels), node.state, node.manual_reset)                            
+        if show_bands else None                                                               
+    )
+    if bracket_data is not None:                                                              
+        for i, (start, end) in enumerate(bracket_data["bands"]):
+            ax.axvspan(                                                                       
+                start - 0.5, end + 0.5, alpha=0.18, color=_COL_BAND,
+                label="Anomaly injection" if i == 0 else None,                                
+            )                                                                                 
+
+    # Normal / anomaly clip scatter.                                                          
+    nm, am = labels == 0, labels == 1
+    ax.scatter(t[nm], scores[nm], s=18, c=_COL_NORM, alpha=0.7,                               
+                label="Normal clips", zorder=3)                                                
+    ax.scatter(t[am], scores[am], s=18, c=_COL_ANOM, alpha=0.7,                               
+                label="Anomaly clips", zorder=3)                                               
                 
-    # k and h horizontal lines                                                        
+    # k and h horizontal lines.                                                               
     if plot_cfg.get("show_k_and_h_lines", True):
-        ax.axhline(node.k, color=_COL_K, ls="--", lw=1.2, label=f"k ({node.k:.3f})")  
-        ax.axhline(node.h, color=_COL_H, ls=":",  lw=1.2, label=f"h ({node.h:.3f})")  
-                                                                                    
-    # S_t accumulator overlay                                                         
-    if plot_cfg.get("show_cusum_accumulator", True):                                  
-        ax.plot(t, node.cusum_S, color=_COL_S_T, lw=0.9, alpha=0.6,
-                label="S_t", zorder=2)                                                
-                                                                                    
-    # Brackets (on top)                                                               
-    if bracket_data is not None:                                                      
-        _draw_brackets(ax, bracket_data)
-                                                                                    
-    header = f"Node: {node.machine_type} {node.machine_id} ch{node.channel} r={node.r:.2f}"                                                                       
-    if compact:                                                                       
-        ax.set_title(                                                                 
-            _compact_title(
-                f"{node.machine_type} {node.machine_id} ch{node.channel}",            
-                node.labels, node.scores, bracket_data,                               
-            ), fontsize=9,
-        )                                                                             
-    else:       
-        ax.set_title(_format_full_title(header, node.labels, node.scores,
-                                        alarms, bracket_data), fontsize=11)          
-        ax.set_xlabel("Timestep")                                                     
-        ax.set_ylabel("Anomaly score (NLL)")                                          
+        ax.axhline(node.k, color=_COL_K, ls="--", lw=1.2,                                     
+                    label=f"k ({node.k:.3f})")                                                 
+        ax.axhline(node.h, color=_COL_H, ls=":",  lw=1.2,                                     
+                    label=f"h ({node.h:.3f})")                                                 
+                                                                                            
+    # CUSUM accumulator overlay.                                                              
+    if plot_cfg.get("show_cusum_accumulator", True):
+        ax.plot(t, node.cusum_S, color=_COL_S_T, lw=0.9, alpha=0.6,                           
+                label="S_t", zorder=2)                                                        
+                                                                                            
+    # Brackets sit on top of everything.                                                      
+    if bracket_data is not None:
+        _draw_brackets(ax, bracket_data)                                                      
+                
+    header = (f"Node: {node.machine_type} {node.machine_id} "                                 
+            f"ch{node.channel}  r={node.r:.2f}")
+    if compact:                                                                               
+        ax.set_title(                                                                         
+            _compact_title(                                                                   
+                f"{node.machine_type} {node.machine_id} ch{node.channel}",                    
+                node.labels, node.scores, bracket_data,                                       
+            ),
+            fontsize=9,                                                                       
+        )                                                                                     
+    else:
+        ax.set_title(                                                                         
+            _format_full_title(
+                header, node.labels, node.scores, alarms, bracket_data,
+            ),                                                                                
+            fontsize=11,
+        )                                                                                     
+        ax.set_xlabel("Timestep")
+        ax.set_ylabel("Anomaly score (NLL)")
         ax.legend(                                                                            
             loc="upper center", bbox_to_anchor=(0.5, -0.18),
             ncol=5, fontsize=7, framealpha=0.9, frameon=True,                                 
-            handlelength=1.5, columnspacing=1.2,             
-        )                                       
-                
-    ax.grid(alpha=0.3)                                                                
+            handlelength=1.5, columnspacing=1.2,                                              
+        )                                                                                     
+                                                                                            
+    ax.grid(alpha=0.3)                                                                     
                 
                                                                                     
 # ── Per-group axes (fused z-score) ───────────────────────────────────────
-                                                                                    
-def _draw_group_axes(ax, g: Group, config: dict, compact: bool = False) -> None:      
-    """Fused-z-score timeline with per-node overlays + brackets + title."""
-    t       = np.arange(len(g.fused_scores))                                          
-    fused   = np.asarray(g.fused_scores)
-    labels  = np.asarray(g.labels)                                                    
-    alarms  = g.alarms                                                                
 
-    plot_cfg = config.get("plot", {})                                                 
-                
-    # Anomaly bands
-    show_bands = config.get("simulation", {}).get("shuffle_mode", "random") \
-                    in ("block_random", "block_fixed")                                
-    bracket_data = _bracket_data(list(labels), alarms) if show_bands else None
-    if bracket_data is not None:                                                      
-        for i, (start, end) in enumerate(bracket_data["bands"]):
-            ax.axvspan(start - 0.5, end + 0.5, alpha=0.18, color=_COL_BAND,           
-                        label="Anomaly injection" if i == 0 else None)                 
+def _draw_group_axes(ax, g: Group, config: dict, compact: bool = False) -> None:
+    """Fused-z-score timeline with per-node overlays + brackets + title.                      
+                                                                                            
+    Brackets are driven by g.state (latched/passthrough), consistent with                     
+    per-node plots.  Per-node z-score overlays are collapsed to a single                      
+    legend entry and drawn in neutral grey.                                                   
+    """                                                                                       
+    t       = np.arange(len(g.fused_scores))                                                  
+    fused   = np.asarray(g.fused_scores)                                                      
+    labels  = np.asarray(g.labels)                                                            
+    alarms  = g.alarms
+                                                                                            
+    plot_cfg = config.get("plot", {})
 
-    # Per-node z-score overlays (dimmed, single legend entry regardless of n).
-    if plot_cfg.get("show_per_node", True):                                               
-        n_count   = len(g.nodes)
-        overlay_c = "#888888"                       # uniform muted grey                  
-        for i, n in enumerate(g.nodes):                                                   
-            z = (np.asarray(n.scores) - n.mu_val) / max(n.sigma_val, 1e-8)                
-            label = (f"per-node z-score (n={n_count})" if i == 0 else None)               
-            ax.plot(np.arange(len(z)), z, alpha=0.35, lw=0.9,                             
-                    color=overlay_c, label=label, zorder=1)            
-                                                                                    
-    # Fused scatter (primary)                                                         
-    if plot_cfg.get("show_fused", True):                                              
-        nm, am = labels == 0, labels == 1                                             
-        ax.scatter(t[nm], fused[nm], s=20, c=_COL_NORM, alpha=0.85,
-                    label="Normal (fused)", zorder=3)                                  
-        ax.scatter(t[am], fused[am], s=20, c=_COL_ANOM, alpha=0.85,                   
-                    label="Anomaly (fused)", zorder=3)                                 
-                                                                                    
-    # k, h lines (fused z-score space)
-    if plot_cfg.get("show_k_and_h_lines", True):                                      
-        ax.axhline(g.k, color=_COL_K, ls="--", lw=1.2, label=f"k ({g.k:.3f})")        
-        ax.axhline(g.h, color=_COL_H, ls=":",  lw=1.2, label=f"h ({g.h:.3f})")        
-                                                                                    
-    # S_t overlay                                                                     
-    if plot_cfg.get("show_cusum_accumulator", True):
-        ax.plot(t, g.cusum_S, color=_COL_S_T, lw=0.9, alpha=0.6,                      
-                label="S_t", zorder=2)                                                
-
-    # Brackets                                                                        
+    # Anomaly bands + bracket outcomes.                                                       
+    show_bands = (
+        config.get("simulation", {}).get("shuffle_mode", "random")                            
+        in ("block_random", "block_fixed")
+    )                                                                                         
+    bracket_data = (
+        _bracket_data(list(labels), g.state, g.manual_reset)                                  
+        if show_bands else None
+    )
     if bracket_data is not None:
-        _draw_brackets(ax, bracket_data)
-                                                                                    
-    head_full    = f"Group: {g.machine_type} {g.machine_id}  n={len(g.nodes)} w={np.round(g.w, 2).tolist()}"                                                        
-    head_compact = f"{g.machine_type} {g.machine_id}  n={len(g.nodes)}"               
-                                                                                    
-    if compact:
-        ax.set_title(_compact_title(head_compact, list(labels), list(fused),          
-                                    bracket_data), fontsize=9)
-    else:                                                                             
-        ax.set_title(_format_full_title(head_full, list(labels), list(fused),
-                                        alarms, bracket_data), fontsize=11)          
-        ax.set_xlabel("Timestep")                                                     
+        for i, (start, end) in enumerate(bracket_data["bands"]):                              
+            ax.axvspan(
+                start - 0.5, end + 0.5, alpha=0.18, color=_COL_BAND,                          
+                label="Anomaly injection" if i == 0 else None,
+            )
+
+    # Per-node z-score overlays (dimmed, single legend entry).                                
+    if plot_cfg.get("show_per_node", True):
+        n_count   = len(g.nodes)                                                              
+        overlay_c = "#888888"                                                                 
+        for i, n in enumerate(g.nodes):                                                       
+            z = (np.asarray(n.scores) - n.mu_val) / max(n.sigma_val, 1e-8)                    
+            label = (f"per-node z-score (n={n_count})" if i == 0 else None)                   
+            ax.plot(np.arange(len(z)), z, alpha=0.35, lw=0.9,
+                    color=overlay_c, label=label, zorder=1)                                   
+                
+    # Fused scatter (primary).                                                                
+    if plot_cfg.get("show_fused", True):
+        nm, am = labels == 0, labels == 1                                                     
+        ax.scatter(t[nm], fused[nm], s=20, c=_COL_NORM, alpha=0.85,
+                    label="Normal (fused)", zorder=3)                                          
+        ax.scatter(t[am], fused[am], s=20, c=_COL_ANOM, alpha=0.85,
+                    label="Anomaly (fused)", zorder=3)                                         
+                
+    # k / h in fused z-score space.                                                           
+    if plot_cfg.get("show_k_and_h_lines", True):
+        ax.axhline(g.k, color=_COL_K, ls="--", lw=1.2, label=f"k ({g.k:.3f})")                
+        ax.axhline(g.h, color=_COL_H, ls=":",  lw=1.2, label=f"h ({g.h:.3f})")                
+                                                                                            
+    # S_t overlay.                                                                            
+    if plot_cfg.get("show_cusum_accumulator", True):                                          
+        ax.plot(t, g.cusum_S, color=_COL_S_T, lw=0.9, alpha=0.6,
+                label="S_t", zorder=2)                                                        
+
+    # Brackets on top.                                                                        
+    if bracket_data is not None:
+        _draw_brackets(ax, bracket_data)                                                      
+
+    head_full = (                                                                             
+        f"Group: {g.machine_type} {g.machine_id}  n={len(g.nodes)}  "
+        f"w={np.round(g.w, 2).tolist()}"                                                      
+    )                                                                                         
+    head_compact = f"{g.machine_type} {g.machine_id}  n={len(g.nodes)}"                       
+                                                                                            
+    if compact: 
+        ax.set_title(                                                                         
+            _compact_title(head_compact, list(labels), list(fused),
+                            bracket_data),                                                     
+            fontsize=9,
+        )                                                                                     
+    else:       
+        ax.set_title(
+            _format_full_title(head_full, list(labels), list(fused),
+                                alarms, bracket_data),                                         
+            fontsize=11,
+        )                                                                                     
+        ax.set_xlabel("Timestep")
         ax.set_ylabel("Fused z-score")
         ax.legend(                                                                            
             loc="upper center", bbox_to_anchor=(0.5, -0.18),
             ncol=5, fontsize=7, framealpha=0.9, frameon=True,                                 
-            handlelength=1.5, columnspacing=1.2,             
-        )                                        
-                
-    ax.grid(alpha=0.3)                                                                
+            handlelength=1.5, columnspacing=1.2,                                              
+        )
+                                                                                            
+    ax.grid(alpha=0.3)                                                             
 
                                                                                     
 # ── Grid ────────────────────────────────────────────────────────────────

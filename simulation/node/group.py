@@ -45,6 +45,7 @@ class Group:
     temperature:   float = 100.0
     cusum_h_sigma: float = 5.0
     cusum_h_floor: float = 1.0
+    manual_reset:  bool  = False
                                                                                                                                 
     # Populated by finalise_fusion() — called once after every node calibrates                                                  
     w:            np.ndarray | None = None   # fusion weights, sum to 1                                                         
@@ -53,7 +54,9 @@ class Group:
     fused_val_z_: np.ndarray | None = None   # diagnostic                                                                       
                                                                                                                                 
     # Stateful CUSUM accumulator for fused scores                                                                               
-    _cusum_S: float = 0.0                                                                                                       
+    _cusum_S: float = 0.0    
+
+    _state_held: bool = field(default=False, repr=False)                                                                                                    
 
     # Cached node statistics — set by finalise_fusion(), used by score()
     _mu_vals:    np.ndarray | None = None
@@ -63,7 +66,9 @@ class Group:
     fused_scores: list[float] = field(default_factory=list)                                                                     
     labels:       list[int]   = field(default_factory=list)                                                                     
     cusum_S:      list[float] = field(default_factory=list)
-    alarms:       list[bool]  = field(default_factory=list)                                                                     
+    alarms:       list[bool]  = field(default_factory=list) 
+    state:       list[bool]  = field(default_factory=list)  
+                                                                       
                 
     # ── Identity helpers ──────────────────────────────────────────────────                                                    
     @property   
@@ -111,11 +116,18 @@ class Group:
     def cusum_update(self, fused_z: float, label: int) -> bool:                                                                 
         """Advance the fused CUSUM, append traces. Returns alarm bool."""
         self._cusum_S = max(0.0, self._cusum_S + fused_z - self.threshold_)                                                     
-        fired = self._cusum_S >= self.cusum_h_                                                                                                                        
+        fired = self._cusum_S >= self.cusum_h_ 
+
+
+        if self.manual_reset:
+            self._state_held |= fired
+        current_state = 1 if (self._state_held if self.manual_reset else fired) else 0
+
         self.fused_scores.append(fused_z)                                                                                       
         self.labels.append(label)
         self.cusum_S.append(self._cusum_S)                                                                                      
         self.alarms.append(fired)
+        self.state.append(current_state)
 
         if fired:                                                                                                               
             self._cusum_S = 0.0
@@ -124,3 +136,11 @@ class Group:
                                                                                                                                 
     def cusum_reset(self) -> None:
         self._cusum_S = 0.0
+
+    def state_reset(self) -> None:
+        """Clear the latched state (simulates engineer acknowledging).
+
+        Called by lockstep at anomaly→normal band boundaries.  No-op when
+        manual_reset is False (state is per-clip in that mode anyway).
+        """
+        self._state_held = False

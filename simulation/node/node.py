@@ -1,47 +1,52 @@
 """Node — one physical detector (one mic channel, one GMMDetector).
-                                                                                                                                
+
 A Node is a thin data container:
-- identity: (machine_type, machine_id, channel, node_id)                                                                      
-- state:    a fitted gmm.detector.GMMDetector (owned)                                                                         
-- IO:       calibrate(fit_paths, val_paths) and score(wav_path, label)                                                        
-                                                                                                                                
-No preprocessor wrapper, no embedder, no separator abstraction.  load_log_mel                                                   
-and GMMDetector are called directly.  Everything the node "does" is a straight                                                  
-passthrough to gmm/.                                                                                                            
-"""                                                                                                                             
-                                                                                                                                
-from dataclasses import dataclass, field                                                                                        
-                
+  - identity: (machine_type, machine_id, channel, node_id)
+  - state:    a fitted gmm.detector.GMMDetector (owned)
+  - IO:       calibrate(fit_paths, val_paths) and score(wav_path, label)
+
+No preprocessor wrapper, no embedder, no separator abstraction.  load_log_mel
+and GMMDetector are called directly.  Everything the node "does" is a straight
+passthrough to gmm/.
+"""
+
+from dataclasses import dataclass, field
+
 import numpy as np
 
-from gmm.config   import R_CANDIDATES                                                                                           
+from gmm.config   import R_CANDIDATES
 from gmm.detector import GMMDetector
-from gmm.features import load_log_mel                                                                                           
-                
+from gmm.features import load_log_mel
+
 
 @dataclass
 class Node:
     # Identity
     node_id:       str
-    machine_type:  str                                                                                                          
+    machine_type:  str
     machine_id:    str
-    channel:       int        # 0..7 on MIMII                                                                                   
-                                                                                                                                
+    channel:       int        # 0..7 on MIMII
+
     # GMM / detector hyperparameters (passthrough to GMMDetector)
     n_mels:        int
     n_components:  int   = 2
     cusum_h_sigma: float = 5.0
     cusum_h_floor: float = 1.0
     seed:          int   = 42
-                                                                                                                                
-    # Populated by calibrate()                                                                                                  
+
+    # Detection state post-processing
+    manual_reset:  bool  = False
+
+    # Populated by calibrate()
     detector: GMMDetector | None = None
-                                                                                                                                
-    # Per-timestep log (used by reporting / plotting)                                                                           
+    _state_held: bool = field(default=False, repr=False)
+
+    # Per-timestep log (used by reporting / plotting)
     scores:  list[float] = field(default_factory=list)
-    labels:  list[int]   = field(default_factory=list)                                                                          
+    labels:  list[int]   = field(default_factory=list)
     cusum_S: list[float] = field(default_factory=list)
-    alarms:  list[bool]  = field(default_factory=list)                                                                          
+    alarms:  list[bool]  = field(default_factory=list)
+    state:   list[int]   = field(default_factory=list)
 
     # ── Calibration ───────────────────────────────────────────────────────
     def calibrate(
@@ -81,36 +86,45 @@ class Node:
                     best_unclaimed = det
         self.detector = best_unclaimed if best_unclaimed is not None else best
 
-    # ── Scoring ───────────────────────────────────────────────────────────                                                    
+    # ── Scoring ───────────────────────────────────────────────────────────
     def score(self, wav_path: str, label: int) -> tuple[float, bool]:
-        """Load clip, compute NLL, advance CUSUM, append traces."""                                                             
-        log_mel = load_log_mel(wav_path, n_mels=self.n_mels, channel=self.channel)                                              
-        nll   = self.detector.score(log_mel)   
+        """Load clip, compute NLL, advance CUSUM, append traces."""
+        log_mel = load_log_mel(wav_path, n_mels=self.n_mels, channel=self.channel)
+        nll   = self.detector.score(log_mel)
 
-        d   = self.detector 
-        new_S = max(0.0, d._cusum_S + nll - d.cusum_k_)                                                                               
+        d     = self.detector
+        new_S = max(0.0, d._cusum_S + nll - d.cusum_k_)
         alarm = new_S >= d.cusum_h_
-        d._cusum_S = 0.0 if alarm else new_S                                                                                 
-                                                                                                                                
+        d._cusum_S = 0.0 if alarm else new_S
+
+        if self.manual_reset:
+            self._state_held |= alarm
+        current_state = 1 if (self._state_held if self.manual_reset else alarm) else 0
+
         self.scores.append(nll)
         self.labels.append(label)
-        self.cusum_S.append(new_S)                                                                             
+        self.cusum_S.append(new_S)
         self.alarms.append(alarm)
-        return nll, alarm                                                                                                       
-                
-    def cusum_reset(self) -> None:                                                                                              
+        self.state.append(current_state)
+        return nll, alarm
+
+    def cusum_reset(self) -> None:
         self.detector.cusum_reset()
-                                                                                                                                
-    # ── Convenience passthroughs (used by Group + reporting) ──────────────                                                    
+
+    def state_reset(self) -> None:
+        """Clear the latched state (simulates engineer acknowledging)."""
+        self._state_held = False
+
+    # ── Convenience passthroughs (used by Group + reporting) ──────────────
     @property
-    def r(self) -> float:             return self.detector.r_                                                                   
-    @property   
+    def r(self) -> float:             return self.detector.r_
+    @property
     def k(self) -> float:             return self.detector.cusum_k_
-    @property                                                                                                                   
+    @property
     def h(self) -> float:             return self.detector.cusum_h_
-    @property                                                                                                                   
+    @property
     def mu_val(self) -> float:        return self.detector.mu_val_
-    @property                                                                                                                   
+    @property
     def sigma_val(self) -> float:     return self.detector.sigma_val_
-    @property                                                                                                                   
+    @property
     def val_nlls(self) -> np.ndarray: return self.detector.val_nlls_
