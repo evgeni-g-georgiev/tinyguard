@@ -3,8 +3,9 @@
 // State machine: COLLECT -> TRAIN -> SYNC -> MONITOR.
 // Flash NODE_A on one board and NODE_B on the other (see config.h).
 //
-// Running a single board is supported: SYNC times out after 30 s and the
-// board continues in solo mode using only its local CUSUM.
+// Running a single board is supported: SYNC times out after SYNC_TIMEOUT_MS
+// (set in config.h) and the board continues in solo mode using only its local
+// CUSUM.
 #include "config.h"
 #include "audio.h"
 #include "spectrogram.h"
@@ -128,12 +129,13 @@ void loop() {
     case SYNC: {
 #if NODE_ID == NODE_A
         ble_publish_val_data(det_mu_val, det_sigma_val, det_val_nlls, chosen_r);
-        Serial.println("SYNC — advertising, waiting for Node B (30 s)...");
+        Serial.print("SYNC — advertising, waiting for Node B (up to ");
+        Serial.print(SYNC_TIMEOUT_MS / 1000UL); Serial.println(" s)...");
 
         {
             unsigned long t_sync = millis();
             bool got_b = false;
-            while (millis() - t_sync < 30000UL) {
+            while (millis() - t_sync < SYNC_TIMEOUT_MS) {
                 if (ble_read_val_data_b(&partner_pkt)) { got_b = true; break; }
             }
             if (got_b) {
@@ -150,7 +152,8 @@ void loop() {
         }
 
 #else // NODE_B
-        Serial.println("SYNC — connecting to Node A (30 s)...");
+        Serial.print("SYNC — connecting to Node A (up to ");
+        Serial.print(SYNC_TIMEOUT_MS / 1000UL); Serial.println(" s)...");
         if (ble_connect()) {
             if (ble_read_val_data(&partner_pkt)) {
                 // Greedy diversity: if Node B picked the same r as Node A, switch

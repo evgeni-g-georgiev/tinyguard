@@ -31,8 +31,9 @@ Each board runs `COLLECT -> TRAIN -> SYNC -> MONITOR`:
   Node B picked the same `r` as Node A, it switches to the next-best
   candidate (greedy diversity, matching `simulation/`), re-fitting from
   the already-captured spectrograms. Both nodes then call
-  `nl_calibrate()` to set up a fused CUSUM. If SYNC times out (30 s),
-  each node falls back to solo mode using only its own CUSUM.
+  `nl_calibrate()` to set up a fused CUSUM. If SYNC times out
+  (`SYNC_TIMEOUT_MS` in `config.h`, currently 3 min), each node falls
+  back to solo mode using only its own CUSUM.
 - **MONITOR** scores each new clip, exchanges NLLs over BLE, and fires
   the alarm from the fused CUSUM. Solo mode uses the local CUSUM.
 

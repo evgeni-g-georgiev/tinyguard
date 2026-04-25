@@ -53,3 +53,10 @@
 
 // ── BLE ──────────────────────────────────────────────────────────────────────
 #define ENABLE_BLE      1
+
+// SYNC handshake timeout. Both nodes use this same value: B as the upper bound
+// on its scan-and-connect window, A as the upper bound on waiting for B's
+// val-data write. They must match (or A's must be the larger of the two), or
+// the side that gives up first will silently drop a late handshake from its
+// counterpart.
+#define SYNC_TIMEOUT_MS 180000UL   // 3 min
