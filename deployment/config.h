@@ -41,7 +41,8 @@
 #define MIN_NK_FRAC     0.01f  // reinit component when N_k < this * N
 
 // ── Detection ────────────────────────────────────────────────────────────────
-#define THRESHOLD_PCT   0.95f
+// CUSUM reference k is set to max(val_nlls) at calibration time, so it has no
+// separate hyperparameter.
 #define CUSUM_H_SIGMA   5.0f
 #define CUSUM_H_FLOOR   1.0f
 

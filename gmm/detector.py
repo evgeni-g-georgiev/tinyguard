@@ -12,7 +12,6 @@ from gmm.config import (
     N_MELS,
     R,
     SEED,
-    THRESHOLD_PCT,
 )
 from gmm.features import extract_feature_r
 from gmm.gmm import DiagGMM
@@ -34,7 +33,7 @@ class GMMDetector:
 
     Attributes set by ``fit``:
         gmm_        DiagGMM
-        threshold_  95th-percentile NLL on val clips
+        threshold_  max NLL on val clips (= worst-case normal score during calibration)
         cusum_k_    CUSUM reference level (= threshold_)
         cusum_h_    CUSUM alarm height
         val_nlls_   per-val-clip NLLs (used by simulation/node/group.py fusion)
@@ -49,7 +48,6 @@ class GMMDetector:
         seed:           int   = SEED,
         cusum_h_sigma:  float = CUSUM_H_SIGMA,
         cusum_h_floor:  float = CUSUM_H_FLOOR,
-        threshold_pct:  float = THRESHOLD_PCT,
         n_mels:         int   = N_MELS,
     ) -> None:
         self.r_            = r
@@ -57,7 +55,6 @@ class GMMDetector:
         self.seed          = seed
         self.cusum_h_sigma = cusum_h_sigma
         self.cusum_h_floor = cusum_h_floor
-        self.threshold_pct = threshold_pct
         self.n_mels_       = n_mels
 
         self.gmm_        : DiagGMM | None    = None
@@ -90,12 +87,12 @@ class GMMDetector:
         return self
 
     def _calibrate(self, X_val: np.ndarray) -> None:
-        val_nlls    = self.gmm_.score_samples(X_val)
-        sorted_nlls = np.sort(val_nlls)
-        n           = len(sorted_nlls)
-        pct_idx     = min(int(n * self.threshold_pct), n - 1)
+        val_nlls = self.gmm_.score_samples(X_val)
 
-        self.threshold_ = float(sorted_nlls[pct_idx])
+        # k is the worst-case normal score the model produced during
+        # calibration. A correctly fit detector should never see a normal
+        # clip above this in the absence of regime shift.
+        self.threshold_ = float(val_nlls.max())
         self.cusum_k_   = self.threshold_
         self.cusum_h_   = float(
             max(self.cusum_h_sigma * float(val_nlls.std()), self.cusum_h_floor)
@@ -156,7 +153,6 @@ class GMMDetector:
             "mu_val":        self.mu_val_,
             "sigma_val":     self.sigma_val_,
             "n_components":  self.n_components,
-            "threshold_pct": self.threshold_pct,
             "cusum_h_sigma": self.cusum_h_sigma,
             "cusum_h_floor": self.cusum_h_floor,
             "seed":          self.seed,
@@ -182,7 +178,6 @@ class GMMDetector:
             seed          = art["seed"],
             cusum_h_sigma = art.get("cusum_h_sigma", CUSUM_H_SIGMA),
             cusum_h_floor = art.get("cusum_h_floor", CUSUM_H_FLOOR),
-            threshold_pct = art.get("threshold_pct", THRESHOLD_PCT),
             n_mels        = art.get("n_mels", N_MELS),
         )
 

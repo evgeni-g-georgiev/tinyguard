@@ -40,12 +40,11 @@ def _softmax(x: np.ndarray) -> np.ndarray:
 class Group:    
     # Identity + config
     machine_type:  str
-    machine_id:    str                                                                                                          
+    machine_id:    str
     nodes:         list[Node]
-    temperature:   float = 100.0                                                                                                
-    threshold_pct: float = 0.95
-    cusum_h_sigma: float = 5.0                                                                                                  
-    cusum_h_floor: float = 1.0                                                                                                  
+    temperature:   float = 100.0
+    cusum_h_sigma: float = 5.0
+    cusum_h_floor: float = 1.0
                                                                                                                                 
     # Populated by finalise_fusion() — called once after every node calibrates                                                  
     w:            np.ndarray | None = None   # fusion weights, sum to 1                                                         
@@ -93,13 +92,11 @@ class Group:
                / np.maximum(sigma_vals[:, None], _SIGMA_FLOOR))                                                    # (N, m)
         self.fused_val_z_ = (self.w[:, None] * z_stack).sum(axis=0)   # (m,)                                                    
                                                                                                                                 
-        # Same floor-percentile + σ-multiplier rule as GMMDetector._calibrate.                                                  
-        sorted_z = np.sort(self.fused_val_z_)                                                                                   
-        pct_idx  = min(int(m * self.threshold_pct), m - 1)                                                                      
-        self.threshold_ = float(sorted_z[pct_idx])                                                                              
-        self.cusum_h_   = float(max(                                                                                            
-            self.cusum_h_sigma * float(self.fused_val_z_.std()),                                                                
-            self.cusum_h_floor,                                                                                                 
+        # Same max-of-val + sigma-multiplier rule as GMMDetector._calibrate.
+        self.threshold_ = float(self.fused_val_z_.max())
+        self.cusum_h_   = float(max(
+            self.cusum_h_sigma * float(self.fused_val_z_.std()),
+            self.cusum_h_floor,
         ))
                                                                                                                                 
     # ── Per-timestep fused scoring ────────────────────────────────────────                                                    

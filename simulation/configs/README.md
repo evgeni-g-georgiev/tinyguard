@@ -25,8 +25,7 @@ GMM params. Passed straight to `gmm.detector.GMMDetector`:
 gmm:
   n_mels:        64           # 32 / 64 / 128
   n_components:  2            # K
-  threshold_pct: 0.95         # k = 95th-percentile val NLL
-  cusum_h_sigma: 5.0          # h = max(sigma_val * 5, cusum_h_floor)
+  cusum_h_sigma: 5.0          # h = max(sigma_val * 5, cusum_h_floor); k = max(val_nlls)
   cusum_h_floor: 1.0
   seed:          42
 ```

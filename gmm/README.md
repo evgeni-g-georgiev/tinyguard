@@ -18,7 +18,7 @@ Each normal clip is loaded as a log-mel spectrogram and compressed to one
 node, the r value is chosen by an r-search over `R_CANDIDATES`; multi-node
 fusion at `simulation/node/group.py` adds a greedy "no-sharing" rule so
 peers prefer different r values. Each node fits a 2-component diagonal GMM
-via EM on 50 fit clips and calibrates a 95th-percentile threshold on 10
+via EM on 50 fit clips and calibrates the threshold to the max NLL on 10
 held-out val clips. The new clip's anomaly score is the negative
 log-likelihood under its best component (Guan et al. Eq. 3). A
 Page-Hinkley CUSUM drives the alarm.
@@ -27,7 +27,7 @@ For multi-node fusion, each node z-normalises its own NLL with its
 stored `mu_val` and `sigma_val`, and the scores are fused with
 `w_i = softmax(-sigma_val_i / T)` (lower val NLL std = more consistent
 node = higher weight). A fused CUSUM is calibrated on the fused val
-z-scores using the same 95th-percentile rule. The math lives in
+z-scores using the same max-of-val rule. The math lives in
 `simulation/node/group.py` for the Python side and
 `deployment/node_learning.h` for the on-device side.
 

@@ -27,12 +27,11 @@ class Node:
     machine_id:    str
     channel:       int        # 0..7 on MIMII                                                                                   
                                                                                                                                 
-    # GMM / detector hyperparameters (passthrough to GMMDetector)                                                               
-    n_mels:        int                                                                                                          
-    n_components:  int   = 2                                                                                                    
-    threshold_pct: float = 0.95
+    # GMM / detector hyperparameters (passthrough to GMMDetector)
+    n_mels:        int
+    n_components:  int   = 2
     cusum_h_sigma: float = 5.0
-    cusum_h_floor: float = 1.0                                                                                                  
+    cusum_h_floor: float = 1.0
     seed:          int   = 42
                                                                                                                                 
     # Populated by calibrate()                                                                                                  
@@ -69,7 +68,6 @@ class Node:
             det = GMMDetector(
                 r             = r,
                 n_components  = self.n_components,
-                threshold_pct = self.threshold_pct,
                 cusum_h_sigma = self.cusum_h_sigma,
                 cusum_h_floor = self.cusum_h_floor,
                 n_mels        = self.n_mels,

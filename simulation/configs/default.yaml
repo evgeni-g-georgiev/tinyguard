@@ -13,12 +13,11 @@ temperature: 100.0       # Softmax temperature for fusion weights.
                           # T→∞   → exactly equal weights.
                                                                                                                                 
 # ── GMM / detector (all pass-through to gmm.detector.GMMDetector) ────────                                                     
-gmm:                                                                                                                            
-  n_mels:         64         # 32 / 64 / 128  — mel filterbank resolution                                                       
-  n_components:   2          # GMM mixture components (K)                                                                       
-  threshold_pct:  0.95       # floor-index percentile for k (CUSUM clip-level)                                                  
-  cusum_h_sigma:  5.0        # h = max(sigma · 5, cusum_h_floor)                                                                
-  cusum_h_floor:  1.0                                                                                                           
+gmm:
+  n_mels:         64         # 32 / 64 / 128, mel filterbank resolution
+  n_components:   2          # GMM mixture components (K)
+  cusum_h_sigma:  5.0        # h = max(sigma * 5, cusum_h_floor); k = max(val_nlls)
+  cusum_h_floor:  1.0
   seed:           42                                                                                                            
                                                                                                                                 
 # ── Simulation loop ──────────────────────────────────────────────────────                                                     

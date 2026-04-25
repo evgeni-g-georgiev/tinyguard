@@ -87,7 +87,6 @@ def build_nodes_and_groups(
                     channel       = ch,
                     n_mels        = gmm_cfg["n_mels"],
                     n_components  = gmm_cfg["n_components"],
-                    threshold_pct = gmm_cfg["threshold_pct"],
                     cusum_h_sigma = gmm_cfg["cusum_h_sigma"],
                     cusum_h_floor = gmm_cfg["cusum_h_floor"],
                     seed          = gmm_cfg["seed"],
@@ -102,7 +101,6 @@ def build_nodes_and_groups(
                     machine_id    = mid,
                     nodes         = machine_nodes,
                     temperature   = temp,
-                    threshold_pct = gmm_cfg["threshold_pct"],
                     cusum_h_sigma = gmm_cfg["cusum_h_sigma"],
                     cusum_h_floor = gmm_cfg["cusum_h_floor"],
                 ))

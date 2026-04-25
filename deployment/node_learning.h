@@ -5,8 +5,6 @@
 // nodes' raw NLLs. Argument ordering is always (Node A, Node B).
 #pragma once
 #include <math.h>
-#include <string.h>
-#include <algorithm>
 #include "config.h"
 
 static float nl_w_a             = 0.5f;
@@ -45,13 +43,13 @@ inline void nl_calibrate(
     }
     float fz_std = sqrtf(fz_var / N_VAL_CLIPS);
 
-    float sorted_z[N_VAL_CLIPS];
-    memcpy(sorted_z, fused_z, sizeof(fused_z));
-    std::sort(sorted_z, sorted_z + N_VAL_CLIPS);
-    int pct_idx = (int)(N_VAL_CLIPS * THRESHOLD_PCT);
-    if (pct_idx >= N_VAL_CLIPS) pct_idx = N_VAL_CLIPS - 1;
+    // k = max of fused val z-scores: worst-case normal fused score during
+    // calibration.
+    float max_z = fused_z[0];
+    for (int i = 1; i < N_VAL_CLIPS; i++)
+        if (fused_z[i] > max_z) max_z = fused_z[i];
 
-    nl_cusum_k = sorted_z[pct_idx];
+    nl_cusum_k = max_z;
     nl_cusum_h = fmaxf(CUSUM_H_SIGMA * fz_std, CUSUM_H_FLOOR);
     nl_cusum_S = 0.0f;
 

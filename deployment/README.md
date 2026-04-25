@@ -47,7 +47,7 @@ Each board runs `COLLECT -> TRAIN -> SYNC -> MONITOR`:
 | `mel_filterbank.h` | Pre-computed `MEL_FB[N_MELS][513]`. Regenerate with `export_mel_filterbank.py` |
 | `features.h` | GWRP feature extraction for any r (max, mean, or sort + geometric weights) |
 | `gmm.h` | Diagonal GMM: init + E-step + M-step (with collapse guard) + score_clip |
-| `detector.h` | Post-fit calibration (95th-pct threshold + CUSUM k and h) and `cusum_update()` |
+| `detector.h` | Post-fit calibration (k = max val NLL, plus CUSUM h) and `cusum_update()` |
 | `node_learning.h` | Fit-quality softmax weights, z-score fusion, fused CUSUM calibration |
 | `ble.h` | BLE GATT service. Node A is peripheral, Node B is central. Four characteristics for val-data and NLL exchange |
 | `export_mel_filterbank.py` | Offline regeneration of `mel_filterbank.h` using librosa |

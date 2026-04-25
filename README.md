@@ -112,6 +112,6 @@ which the C++ [deployment/config.h](deployment/config.h) mirrors. Defaults:
 - 16 kHz audio, 1024-sample FFT, 512-sample hop, 64 mel bins
 - 60 training clips per machine (50 fit + 10 calibration)
 - 2-component diagonal GMM
-- CUSUM threshold at the 95th percentile of val NLLs
+- CUSUM reference level k set to the max of the val NLLs
 - r-search grid `{0.5, 0.7, 0.9, 1.0}` with greedy diversity across nodes
 - Fusion temperature `T = 100`

@@ -1,7 +1,6 @@
 // Threshold calibration and per-clip CUSUM for the local detector.
 #pragma once
 #include <math.h>
-#include <algorithm>
 #include "config.h"
 #include "gmm.h"
 
@@ -36,10 +35,12 @@ inline void calibrate(float val_X[][N_MELS]) {
     det_mu_val    = mean;
     det_sigma_val = fmaxf(std_nll, SIGMA_FLOOR);
 
-    std::sort(nlls, nlls + N_VAL_CLIPS);
-    int pct_idx = (int)(N_VAL_CLIPS * THRESHOLD_PCT);
-    if (pct_idx >= N_VAL_CLIPS) pct_idx = N_VAL_CLIPS - 1;
-    det_threshold = nlls[pct_idx];
+    // k = max(val_nlls): the worst-case normal score the model produced
+    // during calibration.
+    float max_nll = nlls[0];
+    for (int i = 1; i < N_VAL_CLIPS; i++)
+        if (nlls[i] > max_nll) max_nll = nlls[i];
+    det_threshold = max_nll;
     det_cusum_k   = det_threshold;
     det_cusum_h   = fmaxf(CUSUM_H_SIGMA * std_nll, CUSUM_H_FLOOR);
 
