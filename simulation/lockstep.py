@@ -12,8 +12,7 @@ No federation / periodic merge. Fusion is calibration-time only.
 from dataclasses import dataclass, field                                                                                        
 from typing import Iterator
 
-from gmm.config import N_VAL_CLIPS                                                                                              
-
+                                                                                           
 from simulation.node.node  import Node                                                                                          
 from simulation.node.group import Group
 from simulation.data.simulation_loader import NodeTimeline
@@ -54,6 +53,8 @@ def calibrate(
     nodes_by_type:     dict[str, list[Node]],
     groups_by_type:    dict[str, list[Group]],                                                                                  
     timelines_by_type: dict[str, list[NodeTimeline]],
+    n_fit_clips: int,
+    n_val_clips: int,
 ) -> None:                                                                                                                      
     """Phase 1: every node calibrates.  Phase 2: every group sets weights."""
     # Lookup: (mtype, mid) → timeline (all nodes for one machine share it).                                                     
@@ -62,9 +63,9 @@ def calibrate(
     # Phase 1 — per-node r-search + GMM fit.                                                                                    
     for mtype, nodes in nodes_by_type.items():                                                                                  
         for node in nodes:                                                                                                      
-            tl = timeline_lookup[(mtype, node.machine_id)]
-            fit_paths = tl.warmup_paths[:-N_VAL_CLIPS]                                                                          
-            val_paths = tl.warmup_paths[-N_VAL_CLIPS:]                                                                          
+            tl = timeline_lookup[(mtype, node.machine_id)]            
+            fit_paths = tl.warmup_paths[:n_fit_clips]                 
+            val_paths = tl.warmup_paths[n_fit_clips:n_fit_clips + n_val_clips]                                                                           
             print(f"  Calibrating {node.node_id}  (mic {node.channel})")                                                        
             node.calibrate(fit_paths, val_paths)                                                                                
             print(f"    r={node.r:.2f}  k={node.k:.3f}  h={node.h:.3f}"                                                         
@@ -85,14 +86,39 @@ def evaluate(
     groups_by_type:    dict[str, list[Group]],
     timelines_by_type: dict[str, list[NodeTimeline]],                                                                           
 ) -> Iterator[TimestepResult]:
-    """Lockstep — yield one TimestepResult per timestep."""                                                                     
+    """Lockstep — yield one TimestepResult per timestep."""    
+
+
+    # (mtype, mid) → [Node, ...] for band-boundary state resets       
+    nodes_by_machine: dict[tuple[str, str], list[Node]] = {}          
+    for mtype, nodes in nodes_by_type.items():                        
+        for n in nodes:
+            nodes_by_machine.setdefault((mtype, n.machine_id),[]).append(n)                                                         
+
+    # (mtype, mid) → Group for same                                   
+    group_by_machine = {
+        (g.machine_type, g.machine_id): g                             
+        for groups in groups_by_type.values() for g in groups
+    }                                                                 
+
+
+
     timeline_lookup = _timeline_lookup(timelines_by_type)                                                                       
                                                                                                                                 
     first_type  = next(iter(timelines_by_type))                                                                                 
     n_timesteps = len(timelines_by_type[first_type][0].test_paths)                                                              
                                                                                                                                 
     for t in range(n_timesteps):
-        step = TimestepResult(timestep=t)                                                                                       
+        step = TimestepResult(timestep=t)  
+
+        # Band boundary: anomaly → normal transition triggers state_reset.
+        if t > 0:                                                     
+            for (mtype, mid), tl in timeline_lookup.items():
+                if tl.test_labels[t - 1] == 1 and tl.test_labels[t] == 0:                                                                   
+                    for node in nodes_by_machine[(mtype, mid)]:
+                        node.state_reset()                            
+                    if (mtype, mid) in group_by_machine:              
+                        group_by_machine[(mtype, mid)].state_reset()                                                                                     
                 
         # Phase A — every node scores its timestep.                                                                             
         for mtype, nodes in nodes_by_type.items():
@@ -134,10 +160,12 @@ def run(
     nodes_by_type:     dict[str, list[Node]],
     groups_by_type:    dict[str, list[Group]],                                                                                  
     timelines_by_type: dict[str, list[NodeTimeline]],
+    n_fit_clips: int, 
+    n_val_clips: int,
 ) -> Iterator[TimestepResult]:                                                                                                  
     """Run the full simulation: calibrate then evaluate."""
     print("Phase 1: Calibration + fusion setup")                                                                                
-    calibrate(nodes_by_type, groups_by_type, timelines_by_type)                                                                 
+    calibrate(nodes_by_type, groups_by_type, timelines_by_type, n_fit_clips, n_val_clips)                                                                 
     print("Phase 2: Evaluation")                                                                                                
     yield from evaluate(nodes_by_type, groups_by_type, timelines_by_type)                                                       
                                                                                                                                 

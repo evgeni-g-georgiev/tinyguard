@@ -49,10 +49,12 @@ def _node_entry(n: Node) -> dict:
         "sigma_val":    float(n.sigma_val),
         "auc":          _safe_auc(n.labels, n.scores),                                                                          
         "n_alarms":     int(sum(n.alarms)),
-        "scores":       [float(s) for s in n.scores],                                                                           
+        "manual_reset": bool(n.manual_reset),
+        "scores":       [float(s) for s in n.scores],
         "cusum_S":      [float(s) for s in n.cusum_S],
-        "labels":       [int(l)   for l in n.labels],                                                                           
+        "labels":       [int(l)   for l in n.labels],
         "alarms":       [bool(a)  for a in n.alarms],
+        "state":        [int(s)   for s in n.state],
     }                                                                                                                           
                 
                                                                                                                                 
@@ -72,10 +74,12 @@ def _group_entry(g: Group) -> dict:
         "auc":           _safe_auc(g.labels, g.fused_scores),
         "mean_node_auc": mean_node_auc,                                                                                         
         "n_alarms":      int(sum(g.alarms)),
-        "fused_scores":  [float(s) for s in g.fused_scores],                                                                    
+        "manual_reset":  bool(g.manual_reset),
+        "fused_scores":  [float(s) for s in g.fused_scores],
         "cusum_S":       [float(s) for s in g.cusum_S],
-        "labels":        [int(l)   for l in g.labels],                                                                          
-        "alarms":        [bool(a)  for a in g.alarms],                                                                          
+        "labels":        [int(l)   for l in g.labels],
+        "alarms":        [bool(a)  for a in g.alarms],
+        "state":         [int(s)   for s in g.state],
     }
                                                                                                                                 
                 

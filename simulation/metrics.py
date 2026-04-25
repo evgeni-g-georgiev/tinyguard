@@ -147,8 +147,8 @@ def block_metrics(labels, alarms) -> BlockMetrics | None:
 def node_clip_metrics(node):   return clip_metrics(node.labels, node.scores,          
 node.alarms)
 def node_block_metrics(node):  return block_metrics(node.labels,                      
-node.alarms)                                                                          
+node.state)                                                                          
 def group_clip_metrics(g):     return clip_metrics(g.labels,    g.fused_scores,
-g.alarms)                                                                             
+g.state)                                                                             
 def group_block_metrics(g):    return block_metrics(g.labels,
 g.alarms) 

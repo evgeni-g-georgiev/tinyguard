@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
                 
 import numpy as np
 
-from gmm.config   import R_CANDIDATES                                                                                           
+from gmm.config   import R_CANDIDATES as _DEFAULT_R_CANDIDATES                                                                                          
 from gmm.detector import GMMDetector
 from gmm.features import load_log_mel                                                                                           
                 
@@ -34,15 +34,23 @@ class Node:
     cusum_h_sigma: float = 5.0
     cusum_h_floor: float = 1.0                                                                                                  
     seed:          int   = 42
-                                                                                                                                
+    r_candidates:  list[float]  = field(
+          default_factory=lambda: list(_DEFAULT_R_CANDIDATES),          
+      )
+    
+    # Detection state post-processing 
+    manual_reset: bool = False 
+
     # Populated by calibrate()                                                                                                  
     detector: GMMDetector | None = None
+    _state_held: bool = field(default=False, repr=False)
                                                                                                                                 
     # Per-timestep log (used by reporting / plotting)                                                                           
     scores:  list[float] = field(default_factory=list)
     labels:  list[int]   = field(default_factory=list)                                                                          
     cusum_S: list[float] = field(default_factory=list)
-    alarms:  list[bool]  = field(default_factory=list)                                                                          
+    alarms:  list[bool]  = field(default_factory=list) 
+    state:   list[int]   = field(default_factory=list)                                                                          
 
     # ── Calibration ───────────────────────────────────────────────────────                                                    
     def calibrate(self, fit_paths: list[str], val_paths: list[str]) -> None:
@@ -56,7 +64,7 @@ class Node:
                     for p in val_paths]                                                                                         
 
         best: GMMDetector | None = None                                                                                         
-        for r in R_CANDIDATES:
+        for r in self.r_candidates:
             det = GMMDetector(                                                                                                  
                 r             = r,
                 n_components  = self.n_components,                                                                              
@@ -80,16 +88,26 @@ class Node:
         d   = self.detector 
         new_S = max(0.0, d._cusum_S + nll - d.cusum_k_)                                                                               
         alarm = new_S >= d.cusum_h_
-        d._cusum_S = 0.0 if alarm else new_S                                                                                 
+        d._cusum_S = 0.0 if alarm else new_S   
+
+        if self.manual_reset:
+            self._state_held |= alarm
+        current_state = 1 if (self._state_held if self.manual_reset else alarm) else 0
+                                                                            
                                                                                                                                 
         self.scores.append(nll)
         self.labels.append(label)
         self.cusum_S.append(new_S)                                                                             
         self.alarms.append(alarm)
+        self.state.append(current_state)
         return nll, alarm                                                                                                       
                 
     def cusum_reset(self) -> None:                                                                                              
         self.detector.cusum_reset()
+
+    def state_reset(self) -> None: 
+        """Clear the latched state (simulates enginee acknowledging)."""
+        self._state_held = False 
                                                                                                                                 
     # ── Convenience passthroughs (used by Group + reporting) ──────────────                                                    
     @property

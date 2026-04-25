@@ -4,7 +4,7 @@
 # ═══════════════════════════════════════════════════════════════════════════                                                   
                                                                                                                                 
 # ── Core node-learning knob ──────────────────────────────────────────────                                                     
-n_nodes:     8           # 1..8 — number of mic channels per machine.                                                           
+n_nodes:     2           # 1..8 — number of mic channels per machine.                                                           
                           # 1  ⇒ single-node run, no fusion.                                                                     
                           # >1 ⇒ one Group per machine, softmax(-μ/T) fusion.                                                    
 temperature: 100.0       # Softmax temperature for fusion weights.                                                              
@@ -18,15 +18,19 @@ gmm:
   n_components:   2          # GMM mixture components (K)                                                                       
   threshold_pct:  0.95       # floor-index percentile for k (CUSUM clip-level)                                                  
   cusum_h_sigma:  5.0        # h = max(sigma · 5, cusum_h_floor)                                                                
-  cusum_h_floor:  1.0                                                                                                           
+  cusum_h_floor:  1.0 
+  r_candidates:    [0.0, 0.25, 0.5, 0.75, 1.0]   # per-node r-search grid                                                                  
+  n_fit_clips:     50                            # clips used to fit the GMM                                                               
+  n_val_clips:     10                            # held-out clips for k/h calib.                                                                                                                        
   seed:           42                                                                                                            
                                                                                                                                 
 # ── Simulation loop ──────────────────────────────────────────────────────                                                     
 simulation:
-  warmup_count:    120           # 50 fit + 10 val (matches teammate's split)                                                    
+  warmup_count:    60           # 50 fit + 10 val                                                    
   shuffle_mode:    block_fixed  # random | block_random | block_fixed                                                           
   block_size:      10           # 10-clip blocks ≈ teammate's 3-round windows                                                   
-  block_interval:  10                                                                                                           
+  block_interval:  10                  
+  manual_reset:    false                                                                                          
   seed:            42                                                                                                           
                                                                                                                                 
 # ── Plot hyperparameters ─────────────────────────────────────────────────                                                     
