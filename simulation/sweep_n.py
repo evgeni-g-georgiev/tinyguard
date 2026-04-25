@@ -261,9 +261,12 @@ def main() -> None:
             if cell in completed:                                                                                            
                 continue
                                                                                                                             
-            cfg = copy.deepcopy(base_cfg)                                                                                    
-            cfg["n_nodes"]            = n
-            cfg["simulation"]["seed"] = seed                                                                                 
+            cfg = copy.deepcopy(base_cfg)
+            # Override the base config's channels list — this is the key
+            # _resolve_channels() actually reads.  Setting cfg["n_nodes"]
+            # alone has no effect because `channels` takes precedence.
+            cfg["channels"]           = list(range(n))
+            cfg["simulation"]["seed"] = seed
             cfg["gmm"]["seed"]        = seed                                                                                 
 
             cell_start = time.time()                                                                                         

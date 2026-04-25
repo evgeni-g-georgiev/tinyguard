@@ -4,7 +4,7 @@
 # ═══════════════════════════════════════════════════════════════════════════
 
 # ── Core node-learning knob ──────────────────────────────────────────────
-channels:    [0, 4]   # MIMII mic indices; 1..8 entries, 0..7 values.
+channels:    [0, 1, 2, 3, 4, 5]   # MIMII mic indices; 1..8 entries, 0..7 values.
                       # len==1 ⇒ single-node run, no fusion.
                       # len>1  ⇒ one Group per machine, softmax(-σ/T) fusion.
 temperature: 100.0    # Softmax temperature for fusion weights.
