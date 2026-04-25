@@ -28,16 +28,16 @@ fan/id_00/{warmup, test_normal, test_abnormal}/*.wav
 ...
 surplus_abnormal/fan/id_00/*.wav
 
-- warmup — calibration data (size truncated at runtime by simulation.warmup_count)
-- test_normal / test_abnormal — balanced counts across all 16 nodes
-- surplus_abnormal — leftover anomaly clips not used in test
+- warmup: calibration data (size truncated at runtime by simulation.warmup_count)
+- test_normal / test_abnormal: balanced counts across all 16 nodes
+- surplus_abnormal: leftover anomaly clips not used in test
 
 Symlinks (not copies) are used so a fresh split is cheap.
 
 Files
 
-- split_data.py — planning + execution of the warmup/test split
-- simulation_loader.py — loads splits into NodeTimeline objects with
+- split_data.py: planning + execution of the warmup/test split
+- simulation_loader.py: loads splits into NodeTimeline objects with
   configurable shuffle modes (random, block_random, block_fixed)
 
 ---

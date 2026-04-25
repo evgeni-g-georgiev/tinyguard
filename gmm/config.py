@@ -51,6 +51,3 @@ R_CANDIDATES    = [0.5, 0.7, 0.9, 1.0]
 # simulation/ picks every node's r from R_CANDIDATES at runtime.
 NODE_R_A        = 1.0
 NODE_R_B        = 0.0
-
-# Window size for the diagnostic rolling mean in deployment/'s Serial output.
-ROLLING_WINDOW  = 5

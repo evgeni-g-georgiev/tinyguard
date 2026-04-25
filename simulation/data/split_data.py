@@ -23,16 +23,17 @@ than copies so the splits are cheap to (re)create.
 
 Usage (typically called automatically from simulation/run_simulation.py;
 this CLI is an escape hatch):
-    python -m simulation.data.split_data --snr 6dB \\
-        --mimii-root data/mimii_6db --splits-dir simulation/data/splits/6dB
+    python -m simulation.data.split_data --snr 6dB
+    # which resolves to:
+    #   --mimii-root  data/mimii_6db
+    #   --splits-dir  simulation/data/splits/6dB
 """
 
 from dataclasses import dataclass
-from pathlib import Path 
-import shutil 
-import argparse 
-import yaml 
-import os 
+from pathlib import Path
+import shutil
+import argparse
+import os
 
 # ── Data Classes ────────────────────────────────────────────────────────
 
@@ -228,11 +229,14 @@ def discover_sources(
     return manifests
 
 def _copy_files(files: tuple[Path, ...], dest_dir: Path) -> None:
-    """Copy a tuple of files into dest_dir, creating it if needed."""                 
-    dest_dir.mkdir(parents=True, exist_ok=True)                                       
-    for f in files:                                                                   
-        # shutil.copy2(f, dest_dir / f.name)       
-        os.symlink(f.resolve(), dest_dir / f.name)    #NOTE: this makes the split folder just pointers for now so that we can still use existing code                                 
+    """Symlink a tuple of files into dest_dir, creating it if needed.
+
+    Splits use symlinks rather than copies so re-splitting is cheap and the
+    split tree stays small even at MIMII scale.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    for f in files:
+        os.symlink(f.resolve(), dest_dir / f.name)
                                                                                     
                                                                                     
 def execute_split(plan: NodeSplitPlan, splits_dir: Path) -> None:
@@ -294,32 +298,43 @@ def split_data(
     print("Done.")    
 
                                                                                         
+# Display SNR ("-6dB") to on-disk MIMII suffix ("neg6db"). Mirrors
+# run_simulation._MIMII_SNR_DIR.
+_MIMII_SNR_DIR = {"-6dB": "neg6db", "0dB": "0db", "6dB": "6db"}
+
+
 def main():
-    parser = argparse.ArgumentParser(                                                 
+    parser = argparse.ArgumentParser(
         description="Split MIMII into warmup/test_normal/test_abnormal"
     )
     parser.add_argument(
         "--snr", default="6dB",
         choices=["6dB", "0dB", "-6dB"],
-        help="Which MIMII SNR variant to split (defual:6dB). "
-            "The SNR is appended to both --mimii-root and --splits-dir.",
+        help="Which MIMII SNR variant to split (default: 6dB).",
     )
     parser.add_argument(
-        "--mimii-root", type=Path, default=Path("data/mimii"),
-        help="Path to extracted MIMII data ( SNR subdir is appended).",                                          
+        "--mimii-root", type=Path, default=None,
+        help="Path to extracted MIMII data for the chosen SNR. "
+             "Defaults to data/mimii_<dir> where <dir> is "
+             "neg6db / 0db / 6db.",
     )
-    parser.add_argument(                                                              
-        "--splits-dir", type=Path, default=Path("simulation/data/splits"),            
-        help="Output directory for splits (SNR subdir is appended).",
-    )                                                                                 
+    parser.add_argument(
+        "--splits-dir", type=Path, default=Path("simulation/data/splits"),
+        help="Output directory for splits. The chosen SNR is appended as a "
+             "subdir, giving simulation/data/splits/<snr>/.",
+    )
     parser.add_argument(
         "--machine-types", nargs="+",
-        default=["fan", "pump", "slider", "valve"],                                   
+        default=["fan", "pump", "slider", "valve"],
         help="Machine types to include",
-    )                                                                                 
+    )
     args = parser.parse_args()
 
-    mimii_root = args.mimii_root / args.snr 
+    mimii_root = (
+        args.mimii_root
+        if args.mimii_root is not None
+        else Path("data") / f"mimii_{_MIMII_SNR_DIR[args.snr]}"
+    )
     splits_dir = args.splits_dir / args.snr
 
     print(f"SNR: {args.snr}")                                                     

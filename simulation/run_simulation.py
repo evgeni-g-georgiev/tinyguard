@@ -64,8 +64,7 @@ def _resolve_channels(config: dict) -> list[int]:
                 
                                                                                                                                 
 # ── Build nodes + groups ────────────────────────────────────────────────
-# Replaces simulation/builders.py entirely.
-                                                                                                                                
+
 def build_nodes_and_groups(
     config: dict,
 ) -> tuple[dict[str, list[Node]], dict[str, list[Group]]]:

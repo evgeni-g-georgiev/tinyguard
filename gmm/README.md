@@ -1,4 +1,4 @@
-# gmm/ — TWFR-GMM Detection Primitives
+# gmm/: TWFR-GMM Detection Primitives
 
 Library of single-node detection primitives shared by `simulation/` (Python
 N-node evaluation framework) and `deployment/` (C++ 2-node Arduino port).

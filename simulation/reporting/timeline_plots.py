@@ -21,7 +21,7 @@ from simulation.node.node  import Node
 from simulation.node.group import Group
                                                                                     
                                                                                     
-# ── Colour palette (pinned to match 47d8f94) ─────────────────────────────
+# ── Colour palette ───────────────────────────────────────────────────────
 _COL_NORM  = "steelblue"                                                              
 _COL_ANOM  = "darkorange"
 _COL_K     = "firebrick"                                                              
@@ -109,7 +109,7 @@ def _rate_stats(labels, alarms) -> dict:
                                                                                     
                                                                                     
 def _format_full_title(header: str, labels, scores, alarms, bracket_data) -> str:
-    """Two-line title in the 47d8f94 style, fed from CUSUM alarms instead of state."""
+    """Two-line title with detection / false-alarm rate, AUC, and per-band lag."""
     rates = _rate_stats(labels, alarms)                                               
     auc   = _auc(labels, scores)
                                                                                     

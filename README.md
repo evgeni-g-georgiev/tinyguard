@@ -3,10 +3,10 @@
 Anomaly detection for industrial machine sounds. The same TWFR-GMM detector
 runs in two places:
 
-- **Python (`simulation/`)** — full evaluation framework on the MIMII
-  dataset, configurable for 1–8 microphone channels per machine, with
+- **Python (`simulation/`)**: full evaluation framework on the MIMII
+  dataset, configurable for 1 to 8 microphone channels per machine, with
   block-level metrics, AUC, detection-lag plots, and JSON traces.
-- **C++ (`deployment/`)** — on-device port for two co-located Arduino
+- **C++ (`deployment/`)**: on-device port for two co-located Arduino
   Nano 33 BLE Sense Rev 2 boards. Each board records audio from its own
   microphone, trains a Gaussian Mixture Model on-chip, and exchanges
   lightweight confidence signals over Bluetooth LE. A fused score across
@@ -38,7 +38,7 @@ by the negative log-likelihood under its best-fitting component
 drives the alarm.
 
 When N nodes (mic channels) are run together, each picks its own `r` via
-a greedy diversity rule — every node prefers an `r` that no peer on the
+a greedy diversity rule: every node prefers an `r` that no peer on the
 same machine has already claimed. They trade their validation statistics,
 z-normalise their own NLL scores, and fuse them with fit-quality weights
 `w_i = softmax(-sigma_val_i / T)`. Lower val NLL standard deviation means

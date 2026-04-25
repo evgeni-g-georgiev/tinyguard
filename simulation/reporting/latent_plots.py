@@ -1,18 +1,16 @@
 """Latent space visualisation for the GMM pipeline.
 
-Matches the 47d8f94 layout (per-node figure + 4x4 grids for t-SNE and score
-distribution), adapted to the per-clip GMM feature (one vector per clip instead       
-of per-frame embeddings).  Consequence: the per-node figure is two panels
-(t-SNE + histogram) rather than three, because SVDD's per-frame vs per-clip           
-distinction doesn't exist when every clip is a single feature vector.                 
-                                                                                    
-Filter: only nodes whose channel index is in config.latent_plot.node_subset           
-are rendered.  Empty list ⇒ render every channel.                                     
-                                                                                    
-Output under <run_dir>/plots/latent/:                                                 
-<node_id>.png              per-node 2-panel figure (t-SNE + histogram)              
-grid_tsne_ch<N>.png        4x4 grid of t-SNE panels at channel N                    
-grid_scores_ch<N>.png      4x4 grid of score histograms at channel N
+Per-node figure has two panels (t-SNE on the per-clip TWFR feature, and an
+NLL-score histogram). The per-clip GMM feature is one vector per clip, so
+there is no per-frame vs per-clip distinction to render.
+
+Filter: only nodes whose channel index is in config.latent_plot.node_subset
+are rendered. Empty list means every channel.
+
+Output under <run_dir>/plots/latent/, one folder per channel:
+    ch<N>/<machine_type>_<machine_id>.png   per-node 2-panel figure
+    ch<N>/grid_tsne.png                     grid of t-SNE panels (one cell per machine)
+    ch<N>/grid_scores.png                   grid of score histograms (one cell per machine)
 """                                                                                   
                 
 from pathlib import Path                                                              

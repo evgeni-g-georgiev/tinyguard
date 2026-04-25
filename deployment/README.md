@@ -1,4 +1,4 @@
-# deployment/ — Two-Node On-Device TWFR-GMM Detector
+# deployment/: Two-Node On-Device TWFR-GMM Detector
 
 Arduino port of the [gmm/](../gmm/) Python pipeline. Runs on two
 Arduino Nano 33 BLE Sense Rev 2 boards that exchange confidence signals
