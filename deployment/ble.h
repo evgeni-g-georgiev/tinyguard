@@ -98,11 +98,11 @@ inline void ble_begin() {
     Serial.println("[BLE] Node B ready.");
 }
 
-// Scan for 30 s, connect, discover characteristics, subscribe to A's NLL notifications.
+// Scan up to SYNC_TIMEOUT_MS, connect, discover characteristics, subscribe to A's NLL notifications.
 inline bool ble_connect() {
     BLE.scanForName("TinyML-NodeA");
     unsigned long t0 = millis();
-    while (millis() - t0 < 30000UL) {
+    while (millis() - t0 < SYNC_TIMEOUT_MS) {
         BLE.poll();
         nl_peripheral = BLE.available();
         if (nl_peripheral) {
@@ -119,7 +119,7 @@ inline bool ble_connect() {
             }
         }
     }
-    Serial.println("[BLE] Node A not found within 30 s.");
+    Serial.println("[BLE] Node A not found before SYNC timeout.");
     return false;
 }
 
