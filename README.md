@@ -1,117 +1,108 @@
-# TinyML: N-Node TWFR-GMM Anomaly Detection
+# tinyGUARD
 
-Anomaly detection for industrial machine sounds. The same TWFR-GMM detector
-runs in two places:
+tinyGUARD is an industrial machine anomaly detection system that runs
+end-to-end on a microcontroller with as little as 256 KB of SRAM and 1 MB
+of flash. It listens to a machine through a microphone, learns what normal
+operation sounds like during a 10-minute warm-up, and then flags abnormal
+sound as it happens. Training, calibration and inference all happen on the
+device.
 
-- **Python (`simulation/`)**: full evaluation framework on the MIMII
-  dataset, configurable for 1 to 8 microphone channels per machine, with
-  block-level metrics, AUC, detection-lag plots, and JSON traces.
-- **C++ (`deployment/`)**: on-device port for two co-located Arduino
-  Nano 33 BLE Sense Rev 2 boards. Each board records audio from its own
-  microphone, trains a Gaussian Mixture Model on-chip, and exchanges
-  lightweight confidence signals over Bluetooth LE. A fused score across
-  the pair drives a CUSUM alarm. No neural networks, no training data
-  leaves the device, no cloud.
+This repository contains the full system: a Python simulation framework that
+evaluates tinyGUARD across the MIMII dataset of industrial machine sounds,
+and a C++ port that runs on a pair of Arduino Nano 33 BLE Sense Rev 2
+boards exchanging confidence signals over Bluetooth LE.
 
-The approach follows the TWFR-GMM paper (Guan et al., *arXiv:2305.03328*,
-2023) and the collaborative-inference regime of the Node Learning paradigm
-(Kanjo & Aslanov, 2026).
+## Demo
 
-Evaluated on the [MIMII dataset](https://zenodo.org/record/3384388) at
-three SNR levels (-6 dB, 0 dB, +6 dB) across 16 machines.
+<!-- Demo video to be added. -->
 
-## How the pipeline works
+## How it works
 
-Each 10-second audio clip is turned into a log-mel spectrogram. For every
-mel bin, frames are sorted by energy and combined with a Global Weighted
-Ranking Pooling (GWRP) weight vector parameterised by `r`:
+tinyGUARD turns each 10-second audio clip into a log-mel spectrogram, ranks
+the energies in each mel bin from loudest to quietest, and pools them into
+one feature vector. The pooling weights are parameterised by a single value
+`r`: at `r = 0` only the loudest frame contributes (max pooling), at `r = 1`
+all frames contribute equally (mean pooling), and intermediate values blend
+the two. Each machine ends up with the `r` that best separates its normal
+sounds, since some machines are dominated by steady drones and others by
+short transients.
 
-- `r = 0` is max pooling, which emphasises transients.
-- `r = 1` is mean pooling, which emphasises steady-state energy.
-- Intermediate `r` blends the two.
+A two-component diagonal Gaussian mixture model is fit on 50 normal feature
+vectors collected during warm-up. Ten more held-out clips calibrate an
+anomaly threshold. At inference, the negative log-likelihood under the
+best-fitting component is the anomaly score for the new clip. A one-sided
+cumulative sum (CUSUM) accumulates evidence over consecutive clips and
+fires the alarm only when scores have stayed elevated long enough to rule
+out a brief background noise. This trades a small detection delay for a low
+false-alarm rate, which matters more in a factory setting where every false
+alarm interrupts production.
 
-Each clip is compressed to one `(n_mels,)` feature vector. A 2-component
-diagonal Gaussian Mixture Model is fit on 50 normal clips and its
-threshold is calibrated on 10 held-out normal clips. A new clip is scored
-by the negative log-likelihood under its best-fitting component
-(Eq. 3 of Guan et al.). A Page-Hinkley CUSUM over the stream of scores
-drives the alarm.
+When more than one microphone listens to the same machine, the nodes
+collaborate. Each picks an `r` no peer has claimed, calibrates its own
+detector, then exchanges fit-quality statistics. The nodes z-normalise their
+own scores and fuse them with weights that favour better-fitting nodes. The
+fused stream feeds a shared CUSUM. On hardware, two Arduino boards run this
+exchange over BLE.
 
-When N nodes (mic channels) are run together, each picks its own `r` via
-a greedy diversity rule: every node prefers an `r` that no peer on the
-same machine has already claimed. They trade their validation statistics,
-z-normalise their own NLL scores, and fuse them with fit-quality weights
-`w_i = softmax(-sigma_val_i / T)`. Lower val NLL standard deviation means
-a more consistent node and a higher weight. The fused z-score feeds the
-shared CUSUM.
+The methodology and evaluation results are written up in the project report.
 
-## Repo layout
+## Layout
 
 ```
-simulation/     Python N-node simulation framework (this is the main entry point)
-deployment/     Arduino C++ implementation of the 2-node case
-gmm/            Shared detection primitives (config, GMM, features, detector)
-preprocessing/  Audio loading and log-mel spectrogram builder
-data/           MIMII download and extraction script
-config.py       Repo-level path constants
+simulation/     Python evaluation framework on MIMII (1 to 8 nodes)
+deployment/     Arduino C++ port for two boards
+gmm/            Detector primitives shared by both
+preprocessing/  WAV loading and log-mel spectrogram
+data/           MIMII downloader
+config.py       Path constants
 ```
 
-## Quick start
+## Getting started
 
-### 1. Install
+Install the Python dependencies and the system tools the downloader needs:
 
 ```bash
 pip install -r requirements.txt
+# wget and unzip must be on PATH:
+#   macOS:          brew install wget
 ```
 
-Requirements on the host: Python 3.10+, wget and unzip on PATH.
-
-### 2. Download MIMII data
-
-Each SNR variant is ~30 GB on disk after extraction.
+Download one SNR variant of MIMII (about 30 GB extracted per SNR):
 
 ```bash
-python data/download_mimii.py --snr -6dB   # default
-python data/download_mimii.py --snr 0dB
-python data/download_mimii.py --snr 6dB
+python data/download_mimii.py --snr 6dB     # also: 0dB, -6dB
 ```
 
-Files land at `data/mimii_neg6db/`, `data/mimii_0db/`, `data/mimii_6db/`.
-
-### 3. Run the simulation
+Run the simulation. The first run for each SNR builds the warmup/test splits
+on its own.
 
 ```bash
 python -m simulation.run_simulation
 ```
 
-The simulation auto-splits the data on first run (no separate split
-command needed). Each run produces a timestamped directory under
-`simulation/outputs/runs/<timestamp>/` with `results.json`, `summary.txt`,
-and per-channel timeline plots. See [simulation/README.md](simulation/README.md)
-for details.
-
-To pick specific microphone channels, edit `simulation/configs/default.yaml`:
+Each run writes a timestamped folder under `simulation/outputs/runs/` with
+metrics, full traces, and timeline plots. To change the SNR or the set of
+microphone channels, edit `simulation/configs/default.yaml`:
 
 ```yaml
-channels: [1, 4, 6]   # 1..8 entries, 0..7 values
-snr: "-6dB"           # 6dB | 0dB | -6dB
+snr: "-6dB"
+channels: [0, 4]    # one entry per node, mic indices 0..7
 ```
 
-### 4. Flash the Arduinos
+See [simulation/README.md](simulation/README.md) for the full simulation
+workflow and [deployment/README.md](deployment/README.md) for flashing the
+Arduino boards.
 
-See [deployment/README.md](deployment/README.md) for step-by-step
-instructions. In short: set `NODE_ID` to `NODE_A` or `NODE_B` in
-`deployment/config.h` before flashing each board, upload the sketch with
-the Arduino IDE, power both boards, and watch the Serial monitor.
+## Configuration
 
-## Key configuration
+The algorithm constants used by both implementations live in
+[gmm/config.py](gmm/config.py). The C++ side mirrors them in
+[deployment/config.h](deployment/config.h). Defaults: 16 kHz audio, 1024
+FFT, 512 hop, 64 mel bins, 50 fit clips plus 10 calibration clips, two GMM
+components, `r` chosen from `{0.5, 0.7, 0.9, 1.0}`.
 
-All shared algorithm constants live in [gmm/config.py](gmm/config.py),
-which the C++ [deployment/config.h](deployment/config.h) mirrors. Defaults:
+## References
 
-- 16 kHz audio, 1024-sample FFT, 512-sample hop, 64 mel bins
-- 60 training clips per machine (50 fit + 10 calibration)
-- 2-component diagonal GMM
-- CUSUM reference level k set to the max of the val NLLs
-- r-search grid `{0.5, 0.7, 0.9, 1.0}` with greedy diversity across nodes
-- Fusion temperature `T = 100`
+The probabilistic detector is inspired by the TWFR-GMM submission to
+DCASE 2023 (Guan et al.). The collaborative inference setup builds on the
+node learning paradigm of Kanjo & Aslanov (2026).

@@ -1,8 +1,9 @@
-# deployment/: Two-Node On-Device TWFR-GMM Detector
+# Deployment
 
-Arduino port of the [gmm/](../gmm/) Python pipeline. Runs on two
-Arduino Nano 33 BLE Sense Rev 2 boards that exchange confidence signals
-over Bluetooth LE. No pretrained weights. No data leaves the devices.
+The on-device port of tinyGUARD. Two Arduino Nano 33 BLE Sense Rev 2 boards
+each capture audio from their built-in microphone, fit a GMM during a
+warm-up phase, then exchange confidence signals over Bluetooth LE while
+monitoring. Data and models stay on the boards.
 
 ## Hardware
 
@@ -13,75 +14,49 @@ over Bluetooth LE. No pretrained weights. No data leaves the devices.
 | SRAM | 256 KB |
 | Flash | 1 MB |
 | Microphone | Built-in MP34DT06JTR PDM mic |
-| Interface | USB-Serial at 115200 baud |
+| Serial | USB at 115200 baud |
 | Alarm indicator | Built-in LED (pin 13) |
-
-## State machine
-
-Each board runs `COLLECT -> TRAIN -> SYNC -> MONITOR`:
-
-- **COLLECT** captures 60 ten-second clips from the PDM mic. For each
-  clip the full `mel_buf[N_MELS][N_FRAMES]` spectrogram is built hop by
-  hop, then `compute_all_r_features()` extracts features for every
-  candidate in `R_CANDIDATES`. The LED toggles once per clip.
-- **TRAIN** fits a 2-component diagonal GMM for every candidate `r`,
-  calibrates the threshold on 10 held-out clips, and keeps the one with
-  the lowest mean val NLL.
-- **SYNC** exchanges val statistics between the two nodes over BLE. If
-  Node B picked the same `r` as Node A, it switches to the next-best
-  candidate (greedy diversity, matching `simulation/`), re-fitting from
-  the already-captured spectrograms. Both nodes then call
-  `nl_calibrate()` to set up a fused CUSUM. If SYNC times out
-  (`SYNC_TIMEOUT_MS` in `config.h`, currently 3 min), each node falls
-  back to solo mode using only its own CUSUM.
-- **MONITOR** scores each new clip, exchanges NLLs over BLE, and fires
-  the alarm from the fused CUSUM. Solo mode uses the local CUSUM.
-
-## File reference
-
-| File | Purpose |
-|---|---|
-| `tinyml_gmm.ino` | Top-level sketch. COLLECT/TRAIN/SYNC/MONITOR state machine and Serial output |
-| `config.h` | All tunable constants: sample rate, FFT size, N_MELS, r grid, GMM + CUSUM parameters, BLE flag, node identity |
-| `audio.h` | PDM microphone setup and interrupt-driven hop capture |
-| `spectrogram.h` | Per-hop FFT + mel filterbank + log, filling `mel_buf[N_MELS][N_FRAMES]` |
-| `mel_filterbank.h` | Pre-computed `MEL_FB[N_MELS][513]`. Regenerate with `export_mel_filterbank.py` |
-| `features.h` | GWRP feature extraction for any r (max, mean, or sort + geometric weights) |
-| `gmm.h` | Diagonal GMM: init + E-step + M-step (with collapse guard) + score_clip |
-| `detector.h` | Post-fit calibration (k = max val NLL, plus CUSUM h) and `cusum_update()` |
-| `node_learning.h` | Fit-quality softmax weights, z-score fusion, fused CUSUM calibration |
-| `ble.h` | BLE GATT service. Node A is peripheral, Node B is central. Four characteristics for val-data and NLL exchange |
-| `export_mel_filterbank.py` | Offline regeneration of `mel_filterbank.h` using librosa |
-
-## Memory budget
-
-With `N_MELS = 64`, `N_FRAMES = 312`, `N_R_CANDIDATES = 4`,
-`N_TRAIN_CLIPS = 60`:
-
-```
-features[4][60][64]  = 60 KB
-mel_buf[64][312]     = 78 KB
-FFT scratch          = 12 KB
-GMM state + misc     = a few KB
-```
-
-Well within the 256 KB SRAM on the board.
 
 ## Flashing
 
-1. Install the Arduino IDE 2.x, the `Arduino Mbed OS Nano Boards`
-   package, and the `arduinoFFT` library (version 2.x).
+1. Install the Arduino IDE 2.x, the `Arduino Mbed OS Nano Boards` package,
+   and the `arduinoFFT` library (version 2.x).
 2. Open `deployment/tinyml_gmm.ino` in the IDE.
-3. In `config.h`, set `NODE_ID` to `NODE_A` before flashing the first
-   board, then to `NODE_B` before flashing the second.
-4. If you changed `N_FFT` or `N_MELS` in `config.h`, regenerate the
-   filterbank:
-   ```
-   python deployment/export_mel_filterbank.py
-   ```
-5. Pick `Tools -> Board -> Arduino Mbed OS Nano Boards -> Arduino Nano
+3. In `config.h`, set `NODE_ID` to `NODE_A` for the first board, then to
+   `NODE_B` for the second. Each board needs the right ID before it is
+   flashed.
+4. Pick `Tools -> Board -> Arduino Mbed OS Nano Boards -> Arduino Nano
    33 BLE`, select the correct port, and upload.
-6. Open the Serial monitor at 115200 baud to follow the state machine.
+5. Open the Serial monitor at 115200 baud to follow the state machine.
+
+If you change `N_FFT` or `N_MELS` in `config.h`, regenerate the precomputed
+mel filterbank that ships with the sketch:
+
+```bash
+python deployment/export_mel_filterbank.py
+```
+
+## State machine
+
+Each board runs through four states in order:
+
+1. **COLLECT.** Captures 60 ten-second clips from the PDM mic. For each
+   clip the full `mel_buf[N_MELS][N_FRAMES]` log-mel spectrogram is built
+   hop by hop, then `compute_all_r_features()` extracts a feature vector
+   for every `r` in the candidate grid. The LED toggles once per clip so
+   you can see progress.
+2. **TRAIN.** Fits a two-component diagonal GMM for every candidate `r`,
+   calibrates the threshold on the last 10 clips, and keeps the `r` with
+   the lowest mean validation NLL.
+3. **SYNC.** The two boards exchange validation statistics over BLE. If
+   Node B picked the same `r` as Node A, it switches to the next-best
+   candidate (greedy diversity, matching the simulator) and re-fits from
+   the spectrograms it already captured. Both boards then call
+   `nl_calibrate()` to set up the fused CUSUM. If SYNC times out
+   (`SYNC_TIMEOUT_MS` in `config.h`, currently 3 minutes), each board
+   falls back to solo mode and uses only its local CUSUM.
+4. **MONITOR.** Each new clip is scored, NLLs are exchanged over BLE, and
+   the alarm fires from the fused CUSUM. The LED mirrors the alarm state.
 
 ## Serial output
 
@@ -92,5 +67,33 @@ During MONITOR each clip prints one line per board:
 [A] score=512.884  rolling=241.318  S=325.561  S_fused=1.84  *** FUSED ANOMALY ***
 ```
 
-The LED mirrors the current alarm state (fused when SYNCed, local when
-solo).
+## Memory budget
+
+With the defaults in `config.h` (`N_MELS=64`, `N_FRAMES=312`,
+`N_R_CANDIDATES=4`, `N_TRAIN_CLIPS=60`):
+
+```
+features[4][60][64]  = 60 KB
+mel_buf[64][312]     = 78 KB
+FFT scratch          = 12 KB
+GMM state + misc     = negligible
+```
+
+That leaves enough headroom on the Nano 33 BLE Sense Rev 2's 256 KB SRAM
+for the BLE stack and runtime overhead.
+
+## File reference
+
+| File | Purpose |
+|---|---|
+| `tinyml_gmm.ino` | Top-level sketch: state machine and Serial output |
+| `config.h` | All tunable constants. Keep in sync with `gmm/config.py` |
+| `audio.h` | PDM microphone setup and interrupt-driven hop capture |
+| `spectrogram.h` | Per-hop FFT, mel filterbank, log, fills `mel_buf` |
+| `mel_filterbank.h` | Pre-computed `MEL_FB[N_MELS][513]` |
+| `features.h` | GWRP feature extraction for any `r` |
+| `gmm.h` | Diagonal GMM: init, EM, score |
+| `detector.h` | Threshold calibration and `cusum_update()` |
+| `node_learning.h` | Fit-quality fusion weights, z-scoring, fused CUSUM |
+| `ble.h` | BLE GATT service. Node A is peripheral, Node B is central |
+| `export_mel_filterbank.py` | Offline regeneration of `mel_filterbank.h` |
