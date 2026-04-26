@@ -15,9 +15,10 @@ import numpy as np
 
 from simulation.lockstep   import TimestepResult                                      
 from simulation.metrics    import (
-    ClipMetrics, BlockMetrics,                                                        
+    ClipMetrics, BlockMetrics,
+    clip_metrics, block_metrics,
     node_clip_metrics, node_block_metrics,
-    group_clip_metrics, group_block_metrics,                                          
+    group_clip_metrics, group_block_metrics,
 )
 from simulation.node.node  import Node                                                
 from simulation.node.group import Group                                               
@@ -269,20 +270,15 @@ def _bl_cell(val, places: int = 3, width: int = _BL_NUM_W) -> str:
     return f"{val:.{places}f}".center(width)
 
 
-def _bl_aggregate(nodes: list[Node], channel: int) -> dict | None:
-    """Per-machine-type aggregate at a fixed channel.
+def _bl_combine(
+    clips:  list[ClipMetrics  | None],
+    blocks: list[BlockMetrics | None],
+) -> dict:
+    """Mean of each table column across an iterable of (clip, block) pairs.
 
-    Means across machine ids of clip metrics (auc/recall/precision/f1) and
-    block metrics (recall as detection rate, fp/(fp+tn) as FA rate, mean_lag
-    as detection delay). Returns None when no node on that channel exists.
+    Shared by the single-node and fused-group aggregators so both views fill
+    the same row schema.
     """
-    ch_nodes = [n for n in nodes if n.channel == channel]
-    if not ch_nodes:
-        return None
-
-    clips  = [node_clip_metrics(n)  for n in ch_nodes]
-    blocks = [node_block_metrics(n) for n in ch_nodes]
-
     def _mean_or_none(xs):
         xs = [x for x in xs if x is not None]
         return float(np.mean(xs)) if xs else None
@@ -307,6 +303,30 @@ def _bl_aggregate(nodes: list[Node], channel: int) -> dict | None:
     }
 
 
+def _bl_aggregate_node(nodes: list[Node], channel: int) -> dict | None:
+    """Per-type aggregate from one channel's per-node metrics."""
+    ch_nodes = [n for n in nodes if n.channel == channel]
+    if not ch_nodes:
+        return None
+    clips  = [node_clip_metrics(n)  for n in ch_nodes]
+    blocks = [node_block_metrics(n) for n in ch_nodes]
+    return _bl_combine(clips, blocks)
+
+
+def _bl_aggregate_group(groups: list[Group]) -> dict | None:
+    """Per-type aggregate from per-machine fused group metrics.
+
+    Uses g.alarms for clip metrics (per-clip CUSUM fires) and g.state for
+    block metrics (operator-facing flag trace). Mirrors the per-node
+    convention; under manual_reset=False both signals coincide.
+    """
+    if not groups:
+        return None
+    clips  = [clip_metrics(g.labels, g.fused_scores, g.alarms) for g in groups]
+    blocks = [block_metrics(g.labels, g.state)                 for g in groups]
+    return _bl_combine(clips, blocks)
+
+
 def _bl_row(label: str, r: dict) -> str:
     """One body row of the baseline table."""
     return (
@@ -322,12 +342,17 @@ def _bl_row(label: str, r: dict) -> str:
 
 
 def _baseline_table_lines(
-    nodes_by_type: dict[str, list[Node]],
-    config:        dict,
+    nodes_by_type:  dict[str, list[Node]],
+    groups_by_type: dict[str, list[Group]],
+    config:         dict,
 ) -> list[str]:
-    """Render the baseline table as a list of lines."""
+    """Render the baseline table as a list of lines.
+
+    With one configured channel the rows show per-node metrics for that
+    channel. With more than one channel the rows show per-machine fused
+    group metrics, which is the headline number node learning produces.
+    """
     channels = config.get("channels") or [0]
-    channel  = channels[0]
     snr      = config.get("snr", "?")
     machine_types = config.get("data", {}).get(
         "machine_types", list(nodes_by_type)
@@ -335,16 +360,31 @@ def _baseline_table_lines(
 
     snr_label = f"{snr.replace('dB', ' dB')} SNR"
 
+    use_fused = len(channels) > 1 and any(
+        groups_by_type.get(mt) for mt in machine_types
+    )
+    view_label = (
+        f"fused, n={len(channels)}" if use_fused
+        else f"channel {channels[0]}"
+    )
+
     rows: list[tuple[str, dict]] = []
     for mt in machine_types:
-        if mt not in nodes_by_type:
-            continue
-        agg = _bl_aggregate(nodes_by_type[mt], channel)
+        if use_fused:
+            agg = _bl_aggregate_group(groups_by_type.get(mt, []))
+        else:
+            if mt not in nodes_by_type:
+                continue
+            agg = _bl_aggregate_node(nodes_by_type[mt], channels[0])
         if agg is not None:
             rows.append((_DISPLAY_NAMES.get(mt, mt.capitalize()), agg))
 
     if not rows:
-        return ["", f"  (no nodes on channel {channel}; baseline table skipped)", ""]
+        return [
+            "",
+            f"  (no data for view '{view_label}'; baseline table skipped)",
+            "",
+        ]
 
     # Average across machine types.
     def _avg(key):
@@ -387,7 +427,7 @@ def _baseline_table_lines(
     out.append("")
     out.append(rule)
     out.append(
-        f"  Baseline evaluation results by machine type (channel {channel})"
+        f"  Baseline evaluation results by machine type ({view_label})"
     )
     out.append(rule)
     out.append(hdr_top)
@@ -404,9 +444,10 @@ def _baseline_table_lines(
 
 
 def print_baseline_table(
-    nodes_by_type: dict[str, list[Node]],
-    config:        dict,
+    nodes_by_type:  dict[str, list[Node]],
+    groups_by_type: dict[str, list[Group]],
+    config:         dict,
 ) -> None:
     """Terminal-only paper-style summary table; not written to summary.txt."""
-    for line in _baseline_table_lines(nodes_by_type, config):
+    for line in _baseline_table_lines(nodes_by_type, groups_by_type, config):
         print(line)

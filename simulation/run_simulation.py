@@ -206,7 +206,7 @@ def run_with_config(
 
     if verbose_steps:
         print_results(nodes_by_type, groups_by_type)
-        print_baseline_table(nodes_by_type, config)
+        print_baseline_table(nodes_by_type, groups_by_type, config)
 
     runtime = time.time() - start
 
