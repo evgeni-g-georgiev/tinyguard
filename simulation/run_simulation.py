@@ -15,7 +15,9 @@ import yaml
 
 from simulation                         import lockstep
 from simulation.data.simulation_loader  import load_all_timelines
-from simulation.formatters              import format_step, print_results
+from simulation.formatters              import (
+    format_step, print_results, print_baseline_table,
+)
 from simulation.node.node               import Node
 from simulation.node.group              import Group
 from simulation.reporting               import (
@@ -204,6 +206,7 @@ def run_with_config(
 
     if verbose_steps:
         print_results(nodes_by_type, groups_by_type)
+        print_baseline_table(nodes_by_type, config)
 
     runtime = time.time() - start
 
