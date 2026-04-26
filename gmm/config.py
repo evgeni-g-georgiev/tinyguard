@@ -34,7 +34,7 @@ MIN_NK_FRAC     = 0.01
 # Detection / CUSUM. The CUSUM reference level k is set to the max of the
 # val NLLs (the worst-case normal score the model produced during
 # calibration), so it has no separate hyperparameter.
-CUSUM_H_SIGMA   = 5.0
+CUSUM_H_SIGMA   = 20.0
 CUSUM_H_FLOOR   = 1.0
 
 

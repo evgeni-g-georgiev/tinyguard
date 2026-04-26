@@ -31,7 +31,7 @@ Passed straight to `gmm.detector.GMMDetector`:
 gmm:
   n_mels:        64           # 32 / 64 / 128
   n_components:  2
-  cusum_h_sigma: 5.0          # h = max(sigma_val * 5, cusum_h_floor); k = max(val_nlls)
+  cusum_h_sigma: 20.0         # h = max(sigma_val * 20, cusum_h_floor); k = max(val_nlls)
   cusum_h_floor: 1.0
   seed:          42
 ```
