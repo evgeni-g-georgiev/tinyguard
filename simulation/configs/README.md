@@ -41,7 +41,7 @@ gmm:
 ```yaml
 simulation:
   warmup_count:    60           # 50 fit + 10 val (matches gmm/ defaults)
-  shuffle_mode:    block_fixed  # random | block_random | block_fixed
+  shuffle_mode:    block_fixed  # random | block_random | block_fixed | rounds
   block_size:      10           # anomaly clips per block (block modes)
   block_interval:  10           # normal clips between blocks (block_fixed)
   manual_reset:    false        # if true, alarms latch until anomaly->normal boundary

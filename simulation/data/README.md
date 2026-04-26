@@ -30,4 +30,5 @@ A fresh split is cheap because it is symlinks only.
 
 - `split_data.py` plans and executes the warmup / test split.
 - `simulation_loader.py` loads splits into `NodeTimeline` objects, with
-  configurable shuffle modes (`random`, `block_random`, `block_fixed`).
+  configurable shuffle modes (`random`, `block_random`, `block_fixed`,
+  `rounds`).
