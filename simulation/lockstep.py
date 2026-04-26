@@ -118,9 +118,22 @@ def evaluate(
     for t in range(n_timesteps):
         step = TimestepResult(timestep=t)
 
-        # Band boundary: anomaly → normal transition triggers state_reset.
+        # Segment-boundary resets.
+        #   round_boundaries (rounds shuffle only): zero the CUSUM accumulator
+        #     and clear latched state at every segment edge — mirrors the OLD
+        #     gmm/evaluate.py per-round reset.
+        #   anomaly→normal label transition: clear latched state (no-op when
+        #     manual_reset=False).
         if t > 0:
             for (mtype, mid), tl in timeline_lookup.items():
+                if t in tl.round_boundaries:
+                    for node in nodes_by_machine[(mtype, mid)]:
+                        node.cusum_reset()
+                        node.state_reset()
+                    if (mtype, mid) in group_by_machine:
+                        g = group_by_machine[(mtype, mid)]
+                        g.cusum_reset()
+                        g.state_reset()
                 if tl.test_labels[t - 1] == 1 and tl.test_labels[t] == 0:
                     for node in nodes_by_machine[(mtype, mid)]:
                         node.state_reset()

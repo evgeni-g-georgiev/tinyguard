@@ -23,9 +23,24 @@ gmm:
 # ── Simulation loop ──────────────────────────────────────────────────────
 simulation:
   warmup_count:    60           # 50 fit + 10 val (matches gmm/ N_FIT_CLIPS + N_VAL_CLIPS)
-  shuffle_mode:    block_fixed  # random | block_random | block_fixed
+  shuffle_mode:    block_fixed  # block_fixed | block_random | rounds | random
+                                #
+                                # block_fixed (default): continuous interleaved stream,
+                                #   no boundary CUSUM reset.
+                                # rounds: n_rounds × (normal_per_round, anomaly_per_round).
+                                #   CUSUM is reset at every segment boundary so each
+                                #   normal/anomaly window sees a fresh accumulator.
+                                #   Reproduces the OLD gmm/evaluate.py per-round reset.
+  # block_random / block_fixed params:
   block_size:      10           # 10-clip blocks ≈ teammate's 3-round windows
   block_interval:  10
+  # rounds-mode params (ignored in block_* modes):
+  n_rounds:          2          # round count. Budget cap: n_rounds * normal_per_round
+                                # ≤ test_normal pool (currently 89). Same for anomaly.
+                                # 2 × 30 = strict 30-clip windows (default).
+                                # 3 × 29 ≈ OLD gmm/ 3-round layout (87 of each pool used).
+  normal_per_round:  30
+  anomaly_per_round: 30
   manual_reset:    false        # circuit-breaker mode for the state layer.
                                 #   false ⇒ state == alarm per clip (auto-reset).
                                 #   true  ⇒ state latches at first alarm, cleared

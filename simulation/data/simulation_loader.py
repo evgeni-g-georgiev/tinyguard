@@ -11,21 +11,24 @@ the lockstep trainer iterates through one timestep at a time. The same
 timeline is shared by every channel of the same (machine_type, machine_id).
 """
 
-from dataclasses import dataclass 
-from pathlib import Path 
+from dataclasses import dataclass, field
+from pathlib import Path
 from itertools import repeat, zip_longest
-import random 
+import random
 
 
 @dataclass(frozen=True)
 class NodeTimeline:
     """All data for one node, ready for the lockstep simulation."""
-    node_id: str 
-    machine_type: str 
-    machine_id: str 
+    node_id: str
+    machine_type: str
+    machine_id: str
     warmup_paths: list[str]
     test_paths: list[str]
-    test_labels: list[int] # 0 = normal, 1 = abnormal 
+    test_labels: list[int] # 0 = normal, 1 = abnormal
+    # Clip indices where a new segment starts and CUSUM should be reset.
+    # Populated only by the "rounds" shuffle mode; empty for all other modes.
+    round_boundaries: list[int] = field(default_factory=list)
 
 def _build_node_id(machine_type: str, machine_id: str) -> str:
     return f"{machine_type}_{machine_id}"
@@ -163,6 +166,66 @@ def _shuffle_block_fixed(
 
     return result_paths, result_labels
 
+def _shuffle_rounds(
+    normal_paths: list[str],
+    abnormal_paths: list[str],
+    n_rounds: int,
+    normal_per_round: int,
+    anomaly_per_round: int,
+    rng: random.Random,
+) -> tuple[list[str], list[int], list[int]]:
+    """Build the layout n_rounds × (normal_per_round, anomaly_per_round).
+
+    Each round is one normal segment followed by one anomaly segment. Returns
+    the timeline plus the clip indices at every segment boundary so lockstep
+    can call cusum_reset() there. Reproduces the OLD gmm/evaluate.py round
+    structure where CUSUM was zeroed between every segment.
+
+    Returns:
+        (paths, labels, boundaries). boundaries has 2*n_rounds - 1 entries.
+    """
+    needed_normal  = n_rounds * normal_per_round
+    needed_anomaly = n_rounds * anomaly_per_round
+    if len(normal_paths) < needed_normal:
+        raise ValueError(
+            f"rounds shuffle: need {needed_normal} normal clips "
+            f"({n_rounds} × {normal_per_round}) but only "
+            f"{len(normal_paths)} available"
+        )
+    if len(abnormal_paths) < needed_anomaly:
+        raise ValueError(
+            f"rounds shuffle: need {needed_anomaly} abnormal clips "
+            f"({n_rounds} × {anomaly_per_round}) but only "
+            f"{len(abnormal_paths)} available"
+        )
+
+    normal = normal_paths.copy()
+    rng.shuffle(normal)
+    abnormal = abnormal_paths.copy()
+    rng.shuffle(abnormal)
+
+    paths: list[str] = []
+    labels: list[int] = []
+    boundaries: list[int] = []
+
+    n_idx = 0
+    a_idx = 0
+    for r in range(n_rounds):
+        if r > 0:
+            boundaries.append(len(paths))
+        for _ in range(normal_per_round):
+            paths.append(normal[n_idx])
+            labels.append(0)
+            n_idx += 1
+        boundaries.append(len(paths))
+        for _ in range(anomaly_per_round):
+            paths.append(abnormal[a_idx])
+            labels.append(1)
+            a_idx += 1
+
+    return paths, labels, boundaries
+
+
 # ── Public Functions ────────────────────────────────────────────────────────
 
 def load_node_timeline(
@@ -174,6 +237,9 @@ def load_node_timeline(
     rng: random.Random,
     block_size: int = 5,
     block_interval: int = 20,
+    n_rounds: int = 2,
+    normal_per_round: int = 30,
+    anomaly_per_round: int = 30,
 ) -> NodeTimeline:
     """Load one node's split data and build its timeline.
 
@@ -197,15 +263,22 @@ def load_node_timeline(
     test_normal = _load_sorted_wavs(node_dir / "test_normal")
     test_abnormal = _load_sorted_wavs(node_dir / "test_abnormal")
 
-    # Truncate warmup to configured count
+    # Sample warmup_count clips at random from the available warmup pool.
+    # Sequential slicing would re-introduce a chronological bias because the
+    # symlinks created by split_data.py keep their original (time-ordered)
+    # filenames, so _load_sorted_wavs returns them sorted by recording time.
+    # rng.sample preserves the stationarity assumption: every warmup clip is
+    # an IID draw, and any sub-slice of the result (fit, val) is itself a
+    # valid random subsample.
     if warmup_count > len(warmup_all):
         raise ValueError(
             f"{machine_type}/{machine_id}: requested warmup_count={warmup_count} "
             f"but only {len(warmup_all)} warmup clips available"
         )
-    warmup_paths = warmup_all[:warmup_count]
+    warmup_paths = rng.sample(warmup_all, warmup_count)
 
     # Build shuffled test timeline
+    boundaries: list[int] = []
     if shuffle_mode == "random":
         test_paths, test_labels = _shuffle_random(
             test_normal, test_abnormal, rng,
@@ -218,10 +291,15 @@ def load_node_timeline(
         test_paths, test_labels = _shuffle_block_fixed(
             test_normal, test_abnormal, block_size, block_interval, rng,
         )
+    elif shuffle_mode == "rounds":
+        test_paths, test_labels, boundaries = _shuffle_rounds(
+            test_normal, test_abnormal,
+            n_rounds, normal_per_round, anomaly_per_round, rng,
+        )
     else:
         raise ValueError(
             f"Unknown shuffle_mode '{shuffle_mode}'. "
-            f"Expected: random, block_random, block_fixed"
+            f"Expected: random, block_random, block_fixed, rounds"
         )
 
     return NodeTimeline(
@@ -231,6 +309,7 @@ def load_node_timeline(
         warmup_paths=warmup_paths,
         test_paths=test_paths,
         test_labels=test_labels,
+        round_boundaries=boundaries,
     )
 
 
@@ -243,6 +322,9 @@ def load_all_timelines(
     seed: int,
     block_size: int = 5,
     block_interval: int = 20,
+    n_rounds: int = 2,
+    normal_per_round: int = 30,
+    anomaly_per_round: int = 30,
 ) -> dict[str, list[NodeTimeline]]:
     """Load timelines for all nodes, grouped by machine type.
 
@@ -275,6 +357,9 @@ def load_all_timelines(
                 rng=rng,
                 block_size=block_size,
                 block_interval=block_interval,
+                n_rounds=n_rounds,
+                normal_per_round=normal_per_round,
+                anomaly_per_round=anomaly_per_round,
             )
             timelines.append(timeline)
         timelines_by_type[machine_type] = timelines

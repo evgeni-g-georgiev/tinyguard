@@ -180,14 +180,17 @@ def run_with_config(
             ) from e
 
     timelines_by_type = load_all_timelines(
-        splits_dir     = splits_dir,
-        machine_types  = data["machine_types"],
-        machine_ids    = data["machine_ids"],
-        warmup_count   = sim["warmup_count"],
-        shuffle_mode   = sim["shuffle_mode"],
-        seed           = sim["seed"],
-        block_size     = sim.get("block_size", 5),
-        block_interval = sim.get("block_interval", 20),
+        splits_dir        = splits_dir,
+        machine_types     = data["machine_types"],
+        machine_ids       = data["machine_ids"],
+        warmup_count      = sim["warmup_count"],
+        shuffle_mode      = sim["shuffle_mode"],
+        seed              = sim["seed"],
+        block_size        = sim.get("block_size", 5),
+        block_interval    = sim.get("block_interval", 20),
+        n_rounds          = sim.get("n_rounds", 2),
+        normal_per_round  = sim.get("normal_per_round", 30),
+        anomaly_per_round = sim.get("anomaly_per_round", 30),
     )
 
     nodes_by_type, groups_by_type = build_nodes_and_groups(config)
