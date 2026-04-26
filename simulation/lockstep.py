@@ -1,185 +1,188 @@
-"""Lockstep simulation loop — runs all nodes through time simultaneously.
+"""Lockstep loop — every node advances one timestep per iteration.
 
-At each timestep every node across every machine type processes one clip              
-before the simulation advances. This enforces the temporal constraint
-that would exist on real deployed devices: no node sees the future.                   
-                
-Three phases per timestep:
-    1. Process  — each node: preprocess → embed → score (inside Node)
-    2. Federate — share and merge state between neighbours (if enabled)               
-    3. Learn    — update separator on new data (if enabled, future)                   
-                                                                                    
-The loop also handles calibration (warmup) before evaluation begins.                  
-"""                                                                                   
-                                                                                    
+Three phases per run:
+  1. Calibration       — every node runs r-search + GMM fit (greedy diversity:
+                         each node prefers an r not already claimed by a peer
+                         on the same machine).
+  2. Fusion setup      — for each group (len(channels) > 1), compute σ-weighted
+                         fusion weights + fused CUSUM params.
+  3. Evaluation        — for each timestep, every node scores one clip, then
+                         every group fuses the per-node scores.
+
+Band-boundary state resets are applied in Evaluation: at each anomaly→normal
+transition, every node and group on that machine receives state_reset()
+(no-op when manual_reset is False).
+
+No federation / periodic merge.  Fusion is calibration-time only.
+"""
+
 from dataclasses import dataclass, field
 from typing import Iterator
 
-from simulation.node.node import Node
+from gmm.config import N_VAL_CLIPS
+
+from simulation.node.node  import Node
+from simulation.node.group import Group
 from simulation.data.simulation_loader import NodeTimeline
 
-                                                                                    
-# ── Result types ─────────────────────────────────────────────────────────────
-                                                                                    
-@dataclass      
+
+# ── Result types ─────────────────────────────────────────────────────────
+
+@dataclass
 class NodeStepResult:
-    """One node's output for a single timestep."""
-    node_id: str
+    node_id:      str
     machine_type: str
-    score: float
-    label: int
-    predicted_label: int | None 
+    score:        float
+    label:        int
+    alarm:        bool
+    cusum_S:      float
+
+
+@dataclass
+class GroupStepResult:
+    group_id:     str
+    machine_type: str
+    fused_z:      float
+    label:        int
+    alarm:        bool
+    cusum_S:      float
 
 
 @dataclass
 class TimestepResult:
-    """All nodes' outputs for a single timestep."""
-    timestep: int                                                                     
-    node_results: list[NodeStepResult] = field(default_factory=list)
-                                                                                    
-                
-# ── Calibration ──────────────────────────────────────────────────────────────
+    timestep:      int
+    node_results:  list[NodeStepResult]  = field(default_factory=list)
+    group_results: list[GroupStepResult] = field(default_factory=list)
 
-def calibrate(                                                                        
-    nodes_by_type: dict[str, list[Node]],
-    timelines_by_type: dict[str, list[NodeTimeline]],                                 
-) -> None:      
-    """Fit every node's separator on its warmup clips.
-                                                                                    
-    Each node runs its warmup clips through the frozen pipeline
-    (preprocessor → embedder) and passes the resulting embeddings                     
-    to its separator for calibration.
-    """                                                                               
-    for machine_type, nodes in nodes_by_type.items():
-        timelines = timelines_by_type[machine_type]                                   
-                
-        for node, timeline in zip(nodes, timelines):
-            assert node.node_id == timeline.node_id, (
-                f"Node/timeline mismatch: {node.node_id} vs {timeline.node_id}"       
-            )
-            print(f"  Calibrating {node.node_id} "                                    
-                f"({len(timeline.warmup_paths)} clips)")
-            node.warmup(timeline.warmup_paths)       
-            threshold = getattr(node.separator, "threshold", None)
-            if threshold is not None:
-                print(f"    thrshold = {threshold:.4f}")                                 
 
-                                                                                    
-# ── Federation ───────────────────────────────────────────────────────────────
+# ── Calibration ──────────────────────────────────────────────────────────
 
-def _federate(nodes_by_type: dict[str, list[Node]]) -> None:                          
-    """Share and merge separator state between neighbours within each type.
-                                                                                    
-    For each node, gathers shareable state from its neighbours (as
-    defined by topology), then merges that state into its separator                   
-    (as defined by the merge operator).                                               
-    """                                                                               
-    for machine_type, nodes in nodes_by_type.items():                                 
-        # Build a lookup so we can find nodes by ID                                   
-        node_lookup = {node.node_id: node for node in nodes}                          
-
-        for node in nodes:                                                            
-            neighbour_ids = node.get_neighbours()
-            if not neighbour_ids:                                                     
-                continue
-                                                                                    
-            neighbour_states = [                                                      
-                node_lookup[nid].separator.get_shareable_state()
-                for nid in neighbour_ids                                              
-            ]   
-
-            local_state = node.separator.get_shareable_state()                        
-            merged = node.merge.merge(local_state, neighbour_states)
-                                                                                    
-            node.separator.merge_state([merged])
-                                                                                    
-                                                                                    
-# ── Evaluation ───────────────────────────────────────────────────────────────
-                                                                                    
-def evaluate(   
-    nodes_by_type: dict[str, list[Node]],
+def calibrate(
+    nodes_by_type:     dict[str, list[Node]],
+    groups_by_type:    dict[str, list[Group]],
     timelines_by_type: dict[str, list[NodeTimeline]],
-    federation_enabled: bool = False,
-    federation_interval: int = 10,                                                    
+) -> None:
+    """Phase 1: every node calibrates.  Phase 2: every group sets weights."""
+    # Lookup: (mtype, mid) → timeline (all nodes for one machine share it).
+    timeline_lookup = _timeline_lookup(timelines_by_type)
+
+    # Phase 1 — per-node r-search + GMM fit with greedy diversity: each node
+    # picks the best r not already claimed by another node on the same machine.
+    claimed: dict[tuple[str, str], set[float]] = {}
+    for mtype, nodes in nodes_by_type.items():
+        for node in nodes:
+            key = (mtype, node.machine_id)
+            claimed_rs = claimed.setdefault(key, set())
+            tl = timeline_lookup[key]
+            fit_paths = tl.warmup_paths[:-N_VAL_CLIPS]
+            val_paths = tl.warmup_paths[-N_VAL_CLIPS:]
+            print(f"  Calibrating {node.node_id}  (mic {node.channel})")
+            node.calibrate(fit_paths, val_paths, claimed_rs=claimed_rs)
+            claimed_rs.add(node.r)
+            print(f"    r={node.r:.2f}  k={node.k:.3f}  h={node.h:.3f}"
+                  f"  μ_val={node.mu_val:.3f}")
+
+    # Phase 2 — per-group fusion weights.
+    for mtype, groups in groups_by_type.items():
+        for g in groups:
+            g.finalise_fusion()
+            print(f"  Group {g.group_id}  w={g.w.round(3).tolist()}"
+                  f"  k={g.k:.3f}  h={g.h:.3f}")
+
+
+# ── Evaluation ───────────────────────────────────────────────────────────
+
+def evaluate(
+    nodes_by_type:     dict[str, list[Node]],
+    groups_by_type:    dict[str, list[Group]],
+    timelines_by_type: dict[str, list[NodeTimeline]],
 ) -> Iterator[TimestepResult]:
-    """Lockstep evaluation — yield one TimestepResult per timestep.                   
-                
-    At each timestep t:                                                               
-        1. Every node processes its t-th clip (preprocess → embed → score)
-        2. If federation is enabled and t falls on the merge interval,                
-            nodes share and merge state within their machine type                      
-        3. Yield the collected results                                                
-                                                                                    
-    Future: step 2.5 — online separator update (train_step) can be                    
-    added here when we implement online SVDD or contrastive learning.
-    """                                                                               
-    first_type = next(iter(timelines_by_type))
-    n_timesteps = len(timelines_by_type[first_type][0].test_paths)                    
-                                                                                    
+    """Lockstep — yield one TimestepResult per timestep."""
+    # (mtype, mid) → [Node, ...] for band-boundary state resets
+    nodes_by_machine: dict[tuple[str, str], list[Node]] = {}
+    for mtype, nodes in nodes_by_type.items():
+        for n in nodes:
+            nodes_by_machine.setdefault((mtype, n.machine_id), []).append(n)
+
+    # (mtype, mid) → Group for same
+    group_by_machine = {
+        (g.machine_type, g.machine_id): g
+        for groups in groups_by_type.values() for g in groups
+    }
+
+    timeline_lookup = _timeline_lookup(timelines_by_type)
+
+    first_type  = next(iter(timelines_by_type))
+    n_timesteps = len(timelines_by_type[first_type][0].test_paths)
+
     for t in range(n_timesteps):
-        step = TimestepResult(timestep=t)                                             
-                
-        # Step 1: every node processes one clip                                       
-        for machine_type, nodes in nodes_by_type.items():
-            timelines = timelines_by_type[machine_type]                               
-                
-            for node, timeline in zip(nodes, timelines):     
-                curr_label = timeline.test_labels[t]
+        step = TimestepResult(timestep=t)
 
-                # ── Manual-reset at bloack boundaries ────────────────────────────────────────────────────────
-                if node.manual_reset and node._prev_label == 1 and curr_label == 0:
-                    node.reset_state()
+        # Band boundary: anomaly → normal transition triggers state_reset.
+        if t > 0:
+            for (mtype, mid), tl in timeline_lookup.items():
+                if tl.test_labels[t - 1] == 1 and tl.test_labels[t] == 0:
+                    for node in nodes_by_machine[(mtype, mid)]:
+                        node.state_reset()
+                    if (mtype, mid) in group_by_machine:
+                        group_by_machine[(mtype, mid)].state_reset()
 
-                score, predicted = node.process_clip(
-                    wav_path=timeline.test_paths[t],
-                    label=timeline.test_labels[t],                                                  
-                )       
-                
-                node._prev_label = curr_label
+        # Phase A — every node scores its timestep.
+        for mtype, nodes in nodes_by_type.items():
+            for node in nodes:
+                tl    = timeline_lookup[(mtype, node.machine_id)]
+                label = tl.test_labels[t]
+                nll, alarm = node.score(tl.test_paths[t], label=label)
+                step.node_results.append(NodeStepResult(
+                    node_id      = node.node_id,
+                    machine_type = mtype,
+                    score        = nll,
+                    label        = label,
+                    alarm        = alarm,
+                    cusum_S      = node.cusum_S[-1],
+                ))
 
-                step.node_results.append(                                                           
-                    NodeStepResult(      
-                        node_id=node.node_id,
-                        machine_type=node.machine_type,
-                        score=score,    
-                        label=timeline.test_labels[t],
-                        predicted_label=predicted,                                                  
-                    )
-                )   
+        # Phase B — every group fuses its nodes' per-node NLLs.
+        for mtype, groups in groups_by_type.items():
+            for g in groups:
+                per_node_nlls = [n.scores[-1] for n in g.nodes]
+                label         = g.nodes[0].labels[-1]
+                fused_z       = g.score(per_node_nlls)
+                fired         = g.cusum_update(fused_z, label=label)
+                step.group_results.append(GroupStepResult(
+                    group_id     = g.group_id,
+                    machine_type = mtype,
+                    fused_z      = fused_z,
+                    label        = label,
+                    alarm        = fired,
+                    cusum_S      = g.cusum_S[-1],
+                ))
 
-        # Step 2: federation (if enabled and on interval)                             
-        if federation_enabled and (t + 1) % federation_interval == 0:
-            _federate(nodes_by_type)                                                  
-                
-        # Future Step 3: online separator update    - we  need to think about this more.                                   
-        # for machine_type, nodes in nodes_by_type.items():
-        #     for node in nodes:                                                      
-        #         node.separator.train_step(latest_embedding)
-                                                                                    
         yield step
-                                                                                    
-                
-# ── Entry point ──────────────────────────────────────────────────────────────
 
-def run(                                                                              
-    nodes_by_type: dict[str, list[Node]],
-    timelines_by_type: dict[str, list[NodeTimeline]],                                 
-    federation_enabled: bool = False,
-    federation_interval: int = 10,
+
+# ── Entry point ──────────────────────────────────────────────────────────
+
+def run(
+    nodes_by_type:     dict[str, list[Node]],
+    groups_by_type:    dict[str, list[Group]],
+    timelines_by_type: dict[str, list[NodeTimeline]],
 ) -> Iterator[TimestepResult]:
-    """Run the full simulation: calibrate then evaluate.                              
-
-    Calibration is blocking. Evaluation yields results one timestep                   
-    at a time.  
-    """
-    print("Phase 1: Calibration")
-    calibrate(nodes_by_type, timelines_by_type)
-                                                                                    
+    """Run the full simulation: calibrate then evaluate."""
+    print("Phase 1: Calibration + fusion setup")
+    calibrate(nodes_by_type, groups_by_type, timelines_by_type)
     print("Phase 2: Evaluation")
-    yield from evaluate(                                                              
-        nodes_by_type,
-        timelines_by_type,
-        federation_enabled=federation_enabled,
-        federation_interval=federation_interval,
-    )
-    
+    yield from evaluate(nodes_by_type, groups_by_type, timelines_by_type)
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────
+
+def _timeline_lookup(
+    timelines_by_type: dict[str, list[NodeTimeline]],
+) -> dict[tuple[str, str], NodeTimeline]:
+    """(mtype, mid) → NodeTimeline.  Flattens the by-type dict."""
+    return {
+        (t.machine_type, t.machine_id): t
+        for ts in timelines_by_type.values()
+        for t  in ts
+    }

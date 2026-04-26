@@ -1,43 +1,4 @@
-"""
-detector.py — GMMDetector: single autonomous node detector.
-
-Mirrors the combined behaviour of deployment/gmm.h + deployment/detector.h.
-
-Calibration (mirrors calibrate() in detector.h):
-  threshold_  = val_nlls[ floor(N_VAL_CLIPS * THRESHOLD_PCT) ]
-  cusum_k_    = threshold_
-  cusum_h_    = max(CUSUM_H_SIGMA * std(val_nlls), CUSUM_H_FLOOR)
-
-Detection (mirrors cusum_update() in detector.h):
-  S = max(0, S + score - cusum_k)
-  alarm fires when S >= cusum_h, then S resets to 0.
-
-The r parameter controls which GWRP feature is extracted.  Defaults to
-R=1.0 (mean pooling, the deployment-faithful hardware baseline).  Set
-r=0.5 (or any other value in [0,1]) to run the same pipeline with a
-different temporal pooling strategy — used by the node learning framework.
-
-Node Learning role
-------------------
-Each GMMDetector instance corresponds to one autonomous physical node in the
-Node Learning framework (Kanjo & Aslanov, 2026, §3, eq. 1-2):
-
-  θ_i  = {mu_, sigma2_, pi_}   — the node's learnable GMM state
-  D_i  = fit_log_mels           — the node's local training data
-  c_i  = r                      — the node's sensing context (GWRP decay)
-
-  fit()   implements  U_i(θ_i, D_i, c_i)  — local adaptation, no communication.
-  score() implements  ℓ(θ_i; x)          — per-clip NLL (anomaly score).
-
-After fitting, three confidence signals are stored for use by NodeLearning:
-  val_nlls_  : NLL scores on the N_VAL_CLIPS held-out clips
-  mu_val_    : mean of val_nlls_   (fit quality signal)
-  sigma_val_ : std  of val_nlls_   (floored at 1e-8 to avoid division by zero)
-
-These signals are the "learned knowledge" exchanged between nodes in the Node
-Learning merge operator (paper eq. 3).  They are lightweight scalars — not raw
-audio, not GMM parameters.
-"""
+"""Single-node TWFR-GMM detector with CUSUM calibration."""
 
 import pickle
 from pathlib import Path
@@ -51,59 +12,33 @@ from gmm.config import (
     N_MELS,
     R,
     SEED,
-    THRESHOLD_PCT,
 )
 from gmm.features import extract_feature_r
 from gmm.gmm import DiagGMM
 
-_SIGMA_FLOOR = 1e-8   # guards NodeLearning z-score division
+_SIGMA_FLOOR = 1e-8   # guard against division by zero in z-score fusion
 
 
 class GMMDetector:
-    """Deployment-faithful TWFR-GMM anomaly detector.
+    """TWFR-GMM anomaly detector for one node.
 
-    Wraps DiagGMM with threshold calibration and a stateful online CUSUM
-    that mirrors cusum_update() / calibrate() in deployment/detector.h.
+    Fits a ``DiagGMM`` on TWFR features extracted at the given ``r``, then
+    calibrates a threshold and a Page-Hinkley CUSUM from a held-out val split.
 
-    Workflow::
+    Example::
 
-        detector = GMMDetector(r=1.0)
-        detector.fit(fit_log_mels, val_log_mels)  # train GMM + calibrate
-        score    = detector.score(log_mel)         # per-clip NLL
-        alarm    = detector.cusum_update(score)    # online, stateful
-        detector.cusum_reset()                     # call between rounds
-        detector.save("fan_id_00.pkl")
+        det = GMMDetector(r=1.0)
+        det.fit(fit_log_mels, val_log_mels)
+        alarm = det.cusum_update(det.score(log_mel))
 
-    Parameters
-    ----------
-    r : float
-        GWRP decay parameter used for feature extraction.  Default R=1.0
-        (mean pooling, matches deployment hardware).  Use other values only
-        in node-learning experiments — on-device only r=1.0 is feasible
-        without the full spectrogram buffer.
-    n_components : int
-        Number of GMM components.
-    seed : int
-        Random seed for DiagGMM initialisation.
-    cusum_h_sigma : float
-        CUSUM alarm height multiplier: cusum_h = cusum_h_sigma × std(val_nlls).
-    cusum_h_floor : float
-        Minimum cusum_h — guards against degenerate val NLL distributions.
-    threshold_pct : float
-        Detection threshold percentile as a fraction (e.g. 0.95 = 95th pct).
-        Uses floor indexing to match the C++ implementation.
-
-    Attributes (set after fit())
-    ----------------------------
-    gmm_        : DiagGMM
-    r_          : float    — r value used (= constructor arg r)
-    threshold_  : float    — detection threshold (in NLL space)
-    cusum_k_    : float    — CUSUM reference level (= threshold_)
-    cusum_h_    : float    — CUSUM alarm height
-    train_nlls_ : ndarray  — NLL scores on fit clips (diagnostics)
-    val_nlls_   : ndarray  — NLL scores on val clips  (used by NodeLearning)
-    mu_val_     : float    — mean of val_nlls_         (used by NodeLearning)
-    sigma_val_  : float    — std  of val_nlls_         (used by NodeLearning)
+    Attributes set by ``fit``:
+        gmm_        DiagGMM
+        threshold_  max NLL on val clips (= worst-case normal score during calibration)
+        cusum_k_    CUSUM reference level (= threshold_)
+        cusum_h_    CUSUM alarm height
+        val_nlls_   per-val-clip NLLs (used by simulation/node/group.py fusion)
+        mu_val_     mean(val_nlls_)  (confidence signal)
+        sigma_val_  std(val_nlls_)   (confidence signal, floored)
     """
 
     def __init__(
@@ -113,7 +48,6 @@ class GMMDetector:
         seed:           int   = SEED,
         cusum_h_sigma:  float = CUSUM_H_SIGMA,
         cusum_h_floor:  float = CUSUM_H_FLOOR,
-        threshold_pct:  float = THRESHOLD_PCT,
         n_mels:         int   = N_MELS,
     ) -> None:
         self.r_            = r
@@ -121,43 +55,27 @@ class GMMDetector:
         self.seed          = seed
         self.cusum_h_sigma = cusum_h_sigma
         self.cusum_h_floor = cusum_h_floor
-        self.threshold_pct = threshold_pct
         self.n_mels_       = n_mels
 
-        # Populated by fit()
         self.gmm_        : DiagGMM | None    = None
         self.threshold_  : float | None      = None
         self.cusum_k_    : float | None      = None
         self.cusum_h_    : float | None      = None
         self.train_nlls_ : np.ndarray | None = None
-        self.val_nlls_   : np.ndarray | None = None   # for NodeLearning
-        self.mu_val_     : float | None      = None   # for NodeLearning
-        self.sigma_val_  : float | None      = None   # for NodeLearning
+        self.val_nlls_   : np.ndarray | None = None
+        self.mu_val_     : float | None      = None
+        self.sigma_val_  : float | None      = None
 
-        # Stateful CUSUM accumulator — mirrors det_cusum_S in detector.h.
         self._cusum_S: float = 0.0
 
-    # ── Fit & calibrate ───────────────────────────────────────────────────────
+    # ── Fit & calibrate ──────────────────────────────────────────────────────
 
     def fit(
         self,
         fit_log_mels: list[np.ndarray],
         val_log_mels: list[np.ndarray],
     ) -> "GMMDetector":
-        """Fit the GMM and calibrate thresholds.
-
-        Parameters
-        ----------
-        fit_log_mels : list of np.ndarray, each shape (N_MELS, T)
-            N_FIT_CLIPS log-mel spectrograms used to train the GMM.
-        val_log_mels : list of np.ndarray, each shape (N_MELS, T)
-            N_VAL_CLIPS held-out log-mel spectrograms used only for
-            threshold and CUSUM calibration.
-
-        Returns
-        -------
-        self : GMMDetector
-        """
+        """Fit the GMM on ``fit_log_mels`` and calibrate from ``val_log_mels``."""
         X_fit = np.stack([extract_feature_r(lm, self.r_) for lm in fit_log_mels])
         X_val = np.stack([extract_feature_r(lm, self.r_) for lm in val_log_mels])
 
@@ -169,62 +87,38 @@ class GMMDetector:
         return self
 
     def _calibrate(self, X_val: np.ndarray) -> None:
-        """Set threshold and CUSUM parameters from held-out val features.
+        val_nlls = self.gmm_.score_samples(X_val)
 
-        Also stores val_nlls_, mu_val_, sigma_val_ for use by NodeLearning.
-
-        Mirrors calibrate() in deployment/detector.h:
-          threshold = sorted_val_nlls[ floor(N * THRESHOLD_PCT) ]
-          cusum_h   = max(CUSUM_H_SIGMA * std(val_nlls), CUSUM_H_FLOOR)
-        """
-        val_nlls    = self.gmm_.score_samples(X_val)
-        sorted_nlls = np.sort(val_nlls)
-        n           = len(sorted_nlls)
-        pct_idx     = min(int(n * self.threshold_pct), n - 1)
-
-        self.threshold_ = float(sorted_nlls[pct_idx])
+        # k is the worst-case normal score the model produced during
+        # calibration. A correctly fit detector should never see a normal
+        # clip above this in the absence of regime shift.
+        self.threshold_ = float(val_nlls.max())
         self.cusum_k_   = self.threshold_
         self.cusum_h_   = float(
             max(self.cusum_h_sigma * float(val_nlls.std()), self.cusum_h_floor)
         )
-        self._cusum_S   = 0.0
+        self._cusum_S = 0.0
 
-        # Store val distribution statistics for NodeLearning z-score normalisation.
         self.val_nlls_  = val_nlls
         self.mu_val_    = float(val_nlls.mean())
         self.sigma_val_ = float(max(float(val_nlls.std()), _SIGMA_FLOOR))
 
-    # ── Scoring ───────────────────────────────────────────────────────────────
+    # ── Scoring ──────────────────────────────────────────────────────────────
 
     def score(self, log_mel: np.ndarray) -> float:
-        """Compute the anomaly score (NLL) for a single clip.
-
-        Parameters
-        ----------
-        log_mel : np.ndarray, shape (N_MELS, T)
-
-        Returns
-        -------
-        nll : float  — higher values indicate greater anomaly.
-        """
+        """Return the anomaly score (NLL) for one clip. Higher is more anomalous."""
         if self.gmm_ is None:
             raise RuntimeError("GMMDetector.fit() must be called before score().")
         feat = extract_feature_r(log_mel, self.r_)
         return float(self.gmm_.score_samples(feat.reshape(1, -1))[0])
 
-    # ── Stateful CUSUM ────────────────────────────────────────────────────────
+    # ── Online CUSUM ─────────────────────────────────────────────────────────
 
     def cusum_reset(self) -> None:
-        """Reset the CUSUM accumulator to zero."""
         self._cusum_S = 0.0
 
     def cusum_update(self, score: float) -> bool:
-        """Feed one clip's score into the CUSUM accumulator.
-
-        Mirrors cusum_update() in deployment/detector.h:
-            S = max(0, S + score - cusum_k)
-            if S >= cusum_h: reset S, return True
-        """
+        """Feed one score into the CUSUM; return True when the alarm fires."""
         self._cusum_S = max(0.0, self._cusum_S + score - self.cusum_k_)
         if self._cusum_S >= self.cusum_h_:
             self._cusum_S = 0.0
@@ -232,7 +126,7 @@ class GMMDetector:
         return False
 
     def cusum_false_alarms(self, scores: list[float]) -> int:
-        """Count CUSUM alarms in a sequence of scores."""
+        """Count independent CUSUM alarm events across ``scores``."""
         self.cusum_reset()
         n_alarms = 0
         for s in scores:
@@ -240,10 +134,10 @@ class GMMDetector:
                 n_alarms += 1
         return n_alarms
 
-    # ── Persistence ───────────────────────────────────────────────────────────
+    # ── Persistence ──────────────────────────────────────────────────────────
 
     def save(self, path: str | Path) -> None:
-        """Serialise the fitted detector to a .pkl artefact file."""
+        """Pickle the fitted detector to ``path``."""
         if self.gmm_ is None:
             raise RuntimeError("GMMDetector.fit() must be called before save().")
         artefact = {
@@ -259,7 +153,6 @@ class GMMDetector:
             "mu_val":        self.mu_val_,
             "sigma_val":     self.sigma_val_,
             "n_components":  self.n_components,
-            "threshold_pct": self.threshold_pct,
             "cusum_h_sigma": self.cusum_h_sigma,
             "cusum_h_floor": self.cusum_h_floor,
             "seed":          self.seed,
@@ -272,7 +165,7 @@ class GMMDetector:
 
     @classmethod
     def load(cls, path: str | Path) -> "GMMDetector":
-        """Load a fitted detector from a .pkl artefact file."""
+        """Load a pickled detector from ``path``."""
         path = Path(path)
         if not path.exists():
             raise FileNotFoundError(f"Artefact not found: {path}")
@@ -285,14 +178,13 @@ class GMMDetector:
             seed          = art["seed"],
             cusum_h_sigma = art.get("cusum_h_sigma", CUSUM_H_SIGMA),
             cusum_h_floor = art.get("cusum_h_floor", CUSUM_H_FLOOR),
-            threshold_pct = art.get("threshold_pct", THRESHOLD_PCT),
-            n_mels        = art.get("n_mels", N_MELS),   # backwards-compat: old pkls lack this key
+            n_mels        = art.get("n_mels", N_MELS),
         )
 
-        gmm           = DiagGMM(n_components=art["n_components"], seed=art["seed"])
-        gmm.mu_       = art["mu"]
-        gmm.sigma2_   = art["sigma2"]
-        gmm.pi_       = art["pi"]
+        gmm         = DiagGMM(n_components=art["n_components"], seed=art["seed"])
+        gmm.mu_     = art["mu"]
+        gmm.sigma2_ = art["sigma2"]
+        gmm.pi_     = art["pi"]
         gmm._update_lognorm()
 
         det.gmm_        = gmm

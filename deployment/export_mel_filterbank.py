@@ -1,13 +1,13 @@
+"""Regenerate mel_filterbank.h. Run after changing SR, N_FFT, or N_MELS."""
 import librosa
 import numpy as np
 
 SR     = 16000
 N_FFT  = 1024
-N_MELS = 128
-N_BINS = N_FFT // 2 + 1   # 513
+N_MELS = 64
+N_BINS = N_FFT // 2 + 1
 
 fb = librosa.filters.mel(sr=SR, n_fft=N_FFT, n_mels=N_MELS).astype(np.float32)
-# fb.shape == (128, 513)
 
 with open("mel_filterbank.h", "w") as f:
     f.write("#pragma once\n")
@@ -18,4 +18,4 @@ with open("mel_filterbank.h", "w") as f:
         f.write(f"  {{{row}}},\n")
     f.write("};\n")
 
-print(f"Written mel_filterbank.h  ({N_MELS} x {N_BINS} = {N_MELS*N_BINS} floats)")
+print(f"Written mel_filterbank.h  ({N_MELS} x {N_BINS} = {N_MELS * N_BINS} floats)")

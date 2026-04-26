@@ -1,124 +1,159 @@
-"""Results serialisation — JSON, config copy, summary.txt."""
-                                                                                                    
-import json
-import shutil                                                                                         
+"""Results serialisation — JSON, config copy, summary.txt.
+                                                                                                                                
+Full-trace schema: per_node carries score + cusum_S + label + alarm traces;
+per_group carries fused_score + cusum_S + label + alarm traces.  Everything                                                     
+the reporting layer needs to replot without rerunning.                                                                          
+"""                                                                                                                             
+                                                                                                                                
+import json                                                                                                                     
+import shutil   
 from datetime import datetime
 from pathlib import Path
-
+                                                                                                                                
 import numpy as np
+from sklearn.metrics import roc_auc_score                                                                                       
+                
+from simulation.node.node  import Node
+from simulation.node.group import Group
+                                                                                                                                
 
-from simulation.node.node import Node
-from simulation.reporting.helpers import node_stats
-                                                                                                    
-
-def make_run_dir(base_dir: Path = Path("simulation/outputs/runs")) -> Path:                           
+# ── Run dir ──────────────────────────────────────────────────────────────                                                     
+                
+def make_run_dir(base_dir: Path = Path("simulation/outputs/runs")) -> Path:                                                     
     """Create a fresh timestamped run directory and return its path."""
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")                                          
-    run_dir = base_dir / timestamp
-    run_dir.mkdir(parents=True, exist_ok=False)                                                       
-    (run_dir / "plots").mkdir()
-    return run_dir                                                                                    
-                
-                                                                                                    
-def save_results(
-    nodes_by_type: dict[str, list[Node]],                                                             
-    config: dict,
-    config_path: Path,
-    runtime_seconds: float,
-    run_dir: Path,
-) -> None:                                                                                            
-    """Write config.yaml, results.json, and summary.txt to the run directory."""
-                                                                                                    
-    shutil.copy(config_path, run_dir / "config.yaml")
-                                                                                                    
-    node_results: dict[str, dict] = {}                                                                
-    type_aucs: dict[str, list[float]] = {}
-                                                                                                    
-    for machine_type, nodes in nodes_by_type.items():
-        type_aucs[machine_type] = []
-        for node in nodes:                                                                            
-            stats = node_stats(node)
-            node_results[node.node_id] = {                                                            
-                "machine_type":     node.machine_type,
-                "machine_id":       node.machine_id,                                                  
-                "scores":           [float(s) for s in node.scores],
-                "labels":           list(node.labels),                                                
-                "predictions":      [int(p) if p is not None else None for p in node.predictions],
-                "threshold":        getattr(node.separator, "threshold", None),                       
-                "auc":              stats["auc"],
-                "detection_rate":   stats["detection_rate"],                                          
-                "false_alarm_rate": stats["false_alarm_rate"],
-                "confusion": {                                                                        
-                    "tp": stats["tp"], "tn": stats["tn"],
-                    "fp": stats["fp"], "fn": stats["fn"],                                             
-                },
-            }                                                                                         
-            if stats["auc"] is not None:
-                type_aucs[machine_type].append(stats["auc"])                                          
+    ts       = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")                                                                     
+    run_dir  = base_dir / ts                                                                                                    
+    run_dir.mkdir(parents=True, exist_ok=False)
+    (run_dir / "plots").mkdir()                                                                                                 
+    return run_dir                                                                                                              
 
-    summary = {                                                                                       
-        f"{mt}_mean_auc": float(np.mean(aucs)) if aucs else None
-        for mt, aucs in type_aucs.items()                                                             
+                                                                                                                                
+# ── JSON save ────────────────────────────────────────────────────────────
+                                                                                                                                
+def _safe_auc(labels, scores):
+    try:
+        return float(roc_auc_score(labels, scores))
+    except Exception:                                                                                                           
+        return None
+                                                                                                                                
+                
+def _node_entry(n: Node) -> dict:
+    return {
+        "machine_type": n.machine_type,
+        "machine_id":   n.machine_id,                                                                                           
+        "channel":      n.channel,
+        "r":            float(n.r),                                                                                             
+        "k":            float(n.k),                                                                                             
+        "h":            float(n.h),
+        "mu_val":       float(n.mu_val),                                                                                        
+        "sigma_val":    float(n.sigma_val),
+        "auc":          _safe_auc(n.labels, n.scores),                                                                          
+        "n_alarms":     int(sum(n.alarms)),
+        "manual_reset": bool(n.manual_reset),
+        "scores":       [float(s) for s in n.scores],
+        "cusum_S":      [float(s) for s in n.cusum_S],
+        "labels":       [int(l)   for l in n.labels],
+        "alarms":       [bool(a)  for a in n.alarms],
+        "state":        [int(s)   for s in n.state],
+    }                                                                                                                           
+                
+                                                                                                                                
+def _group_entry(g: Group) -> dict:
+    mean_node_auc = float(np.nanmean([
+        _safe_auc(n.labels, n.scores) or np.nan for n in g.nodes                                                                
+    ]))
+    return {                                                                                                                    
+        "machine_type":  g.machine_type,                                                                                        
+        "machine_id":    g.machine_id,
+        "n_nodes":       len(g.nodes),                                                                                          
+        "node_ids":      [n.node_id for n in g.nodes],                                                                          
+        "w":             [float(x) for x in g.w],
+        "temperature":   g.temperature,                                                                                         
+        "k":             float(g.k),
+        "h":             float(g.h),                                                                                            
+        "auc":           _safe_auc(g.labels, g.fused_scores),
+        "mean_node_auc": mean_node_auc,                                                                                         
+        "n_alarms":      int(sum(g.alarms)),
+        "manual_reset":  bool(g.manual_reset),
+        "fused_scores":  [float(s) for s in g.fused_scores],
+        "cusum_S":       [float(s) for s in g.cusum_S],
+        "labels":        [int(l)   for l in g.labels],
+        "alarms":        [bool(a)  for a in g.alarms],
+        "state":         [int(s)   for s in g.state],
     }
-    all_aucs = [a for aucs in type_aucs.values() for a in aucs]                                       
-    summary["overall_mean_auc"] = float(np.mean(all_aucs)) if all_aucs else None
-                                                                                                    
-    results = { 
-        "config":  config,                                                                            
-        "nodes":   node_results,
-        "summary": summary,
-    }                                                                                                 
-
-    with open(run_dir / "results.json", "w") as f:                                                    
-        json.dump(results, f, indent=2)
-
-    pipeline_str = (                                                                                  
-        f"{config['preprocessor']} + "
-        f"{config['frozen_embedder']} + "                                                             
-        f"{config['separator']}"
-    )                                                                                                 
-    sim_block = config.get("simulation", {})
-                                                                                                    
-    runtime_minutes = int(runtime_seconds // 60)                                                      
-    runtime_secs    = int(runtime_seconds % 60)
-                                                                                                    
-    lines: list[str] = []                                                                             
-    lines.append(f"Run: {run_dir.name}")
-    lines.append(f"Config: {config_path}")                                                            
-    lines.append(f"Pipeline: {pipeline_str}")                                                         
-    lines.append(
-        f"Shuffle: {sim_block.get('shuffle_mode', '?')}  "                                            
-        f"Warmup: {sim_block.get('warmup_count', '?')}  "                                             
-        f"Seed: {sim_block.get('seed', '?')}"
-    )                                                                                                 
-    lines.append(f"Runtime: {runtime_minutes}m {runtime_secs}s")
-    lines.append("-" * 56)                                                                            
-    lines.append("")                                                                                  
-    lines.append("Results")
-    lines.append("=" * 56)                                                                            
+                                                                                                                                
                 
-    for machine_type, nodes in nodes_by_type.items():
-        for node in nodes:
-            r = node_results[node.node_id]                                                            
-            if r["auc"] is None:
-                lines.append(f"{node.node_id}: AUC = N/A (single class)")                             
-                continue                                                                              
-            c = r["confusion"]
-            lines.append(                                                                             
-                f"{node.node_id}: AUC = {r['auc']:.4f}  "
-                f"|  TP={c['tp']:3d} TN={c['tn']:3d} "
-                f"FP={c['fp']:3d} FN={c['fn']:3d}"                                                    
-            )
-                                                                                                    
-    lines.append("-" * 56)
-    for machine_type in nodes_by_type:
-        mean = summary.get(f"{machine_type}_mean_auc")                                                
-        if mean is not None:                                                                          
-            lines.append(f"{machine_type} mean AUC: {mean:.4f}")                                      
-    lines.append("")                                                                                  
-    if summary["overall_mean_auc"] is not None:                                                       
-        lines.append(f"Overall mean AUC: {summary['overall_mean_auc']:.4f}")
-    lines.append("=" * 56)                                                                            
-                                                                                                    
-    with open(run_dir / "summary.txt", "w") as f:
-        f.write("\n".join(lines) + "\n")  
+def save_results(
+    *,
+    nodes_by_type:   dict[str, list[Node]],
+    groups_by_type:  dict[str, list[Group]],                                                                                    
+    config:          dict,
+    config_path:     Path,                                                                                                      
+    runtime_seconds: float,                                                                                                     
+    run_dir:         Path,
+) -> None:                                                                                                                      
+    """Write config.yaml, results.json, summary.txt into run_dir."""
+    shutil.copy(config_path, run_dir / "config.yaml")                                                                           
+
+    per_node  = {n.node_id: _node_entry(n)                                                                                      
+                for ns in nodes_by_type.values()  for n in ns}
+    per_group = {g.group_id: _group_entry(g)                                                                                    
+                for gs in groups_by_type.values() for g in gs}                                                                 
+
+    # Aggregate AUC summary.                                                                                                    
+    node_aucs  = [e["auc"]          for e in per_node.values()  if e["auc"] is not None]
+    group_aucs = [e["auc"]          for e in per_group.values() if e["auc"] is not None]                                        
+    mean_of_nodes_per_group = [e["mean_node_auc"] for e in per_group.values()                                                   
+                                if not np.isnan(e["mean_node_auc"])]                                                            
+                                                                                                                                
+    summary = {                                                                                                                 
+        "mean_node_auc":   float(np.mean(node_aucs))  if node_aucs  else None,
+        "mean_fused_auc":  float(np.mean(group_aucs)) if group_aucs else None,                                                  
+        "nl_gain_vs_mean": (
+            float(np.mean(group_aucs) - np.mean(mean_of_nodes_per_group))                                                       
+            if group_aucs and mean_of_nodes_per_group else None                                                                 
+        ),                                                                                                                      
+    }                                                                                                                           
+                
+    out = {                                                                                                                     
+        "runtime_seconds": runtime_seconds,
+        "config":          config,                                                                                              
+        "per_node":        per_node,
+        "per_group":       per_group,
+        "summary":         summary,                                                                                             
+    }
+                                                                                                                                
+    with open(run_dir / "results.json", "w") as f:
+        json.dump(out, f, indent=2)
+
+    _write_summary_txt(                                                               
+        run_dir, config, config_path, runtime_seconds, summary,
+        nodes_by_type, groups_by_type,                                  
+    )                                                
+
+def _write_summary_txt(                                                               
+    run_dir, config, config_path, runtime_seconds, summary,
+    nodes_by_type, groups_by_type,                                                    
+) -> None:
+    from simulation.formatters import result_lines                                    
+                                                                                    
+    mins, secs = int(runtime_seconds // 60), int(runtime_seconds % 60)                
+                                                                                    
+    header = [                                                                        
+        f"Run: {run_dir.name}",
+        f"Config: {config_path}",
+        f"channels={config['channels']}  T={config['temperature']}  "
+        f"n_mels={config['gmm']['n_mels']}  snr={config['snr']}",
+        f"Shuffle: {config['simulation']['shuffle_mode']}  "                          
+        f"Warmup: {config['simulation']['warmup_count']}  "                           
+        f"Seed: {config['simulation']['seed']}",                                      
+        f"Runtime: {mins}m {secs}s",                                                  
+        "",     
+        f"Top-level AUC summary:",                                                    
+        f"  mean per-node AUC:  {summary['mean_node_auc']}",                          
+        f"  mean fused AUC:     {summary['mean_fused_auc']}",                         
+        f"  NL gain (fused − mean of nodes): {summary['nl_gain_vs_mean']}",           
+    ]                                                                                 
+                
+    lines = header + result_lines(nodes_by_type, groups_by_type)                      
+    (run_dir / "summary.txt").write_text("\n".join(lines) + "\n")

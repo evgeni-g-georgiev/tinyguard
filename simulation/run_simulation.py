@@ -1,162 +1,262 @@
-                                                                                                    
-"""Orchestrator — wire up components from config and run the simulation.
-                                                                                                    
-This is the only file that reads default.yaml. It constructs all components,
-passes them into Nodes, and runs the lockstep loop. Everything downstream                             
-receives fully configured objects via dependency injection.                                           
-                                                                                                    
-Usage:                                                                                                
-    python -m simulation.run_simulation                                                               
-    python -m simulation.run_simulation --config simulation/configs/experiment.yaml
+"""Orchestrator — reads YAML, builds nodes + groups, runs lockstep.
+
+No registries, no builders module.  Construction is a flat pass over config.
+
+Usage:
+    python -m simulation.run_simulation
+    python -m simulation.run_simulation --config simulation/configs/default.yaml
 """
 
 import argparse
+import time
 from pathlib import Path
 
-import yaml                                                                                           
-import time
-                                                                                                    
-from simulation.data.simulation_loader import load_all_timelines
-from simulation import lockstep
-from simulation.builders import build_shared_components, build_nodes                                  
-from simulation.formatters import format_step, print_results
-from simulation.reporting import make_run_dir, save_results, save_plots, save_latent_plots            
-                                                                                                    
-                                                                                                    
-VALID_SNRS = ("6dB", "0dB", "-6dB")                                                                   
-                                                                                                    
-                
+import yaml
+
+from simulation                         import lockstep
+from simulation.data.simulation_loader  import load_all_timelines
+from simulation.formatters              import format_step, print_results
+from simulation.node.node               import Node
+from simulation.node.group              import Group
+from simulation.reporting               import (
+    make_run_dir, save_results, save_plots, save_latent_plots,
+)
+
+
+VALID_SNRS = ("6dB", "0dB", "-6dB")
+
+# Maps display SNR ("-6dB") to on-disk mimii dir suffix ("neg6db"). The splits
+# dir keeps the display form (e.g. simulation/data/splits/-6dB/).
+_MIMII_SNR_DIR = {"-6dB": "neg6db", "0dB": "0db", "6dB": "6db"}
+
+
+# ── Config resolution ────────────────────────────────────────────────────
+
 def _resolve_snr(config: dict) -> str:
-    """Validate the top-level snr key and resolve {snr} placeholders."""
-    snr = config.get("snr")                                                                           
+    """Validate snr and expand {snr} placeholders in data paths."""
+    snr = config.get("snr")
     if snr not in VALID_SNRS:
-        raise ValueError(                                                                             
-            f"Top-level config key 'snr' must be one of {VALID_SNRS}, got {snr!r}"
-        )                                                                                             
+        raise ValueError(f"snr must be one of {VALID_SNRS}, got {snr!r}")
     data = config["data"]
-    data["mimii_root"] = data["mimii_root"].format(snr=snr)                                           
-    data["splits_dir"] = data["splits_dir"].format(snr=snr)                                           
+    data["mimii_root"] = data["mimii_root"].format(snr=_MIMII_SNR_DIR[snr])
+    data["splits_dir"] = data["splits_dir"].format(snr=snr)
     return snr
-                                                                                                    
-                                                                                                    
-def main(config_path: str = "simulation/configs/default.yaml"):
-    """Load config, build components, run simulation, print results."""                               
-                
-    with open(config_path) as f:
-        config = yaml.safe_load(f)
 
-    sim = config["simulation"]                                                                        
-    data = config["data"]
-                                                                                                    
-    state_enabled = sim.get("state_enabled", False)
-    manual_reset = sim.get("manual_reset", False)
-    snr = _resolve_snr(config)
-                                                                                                    
-    print(f"Config: {config_path}")
-    print(f"SNR:             {snr}")                                                                  
-    print(f"Preprocessor:    {config['preprocessor']}")
-    print(f"Frozen embedder: {config['frozen_embedder']}")                                            
-    print(f"Separator:       {config['separator']}")
-    print(f"Topology:        {config['topology']}")                                                   
-    print(f"Merge:           {config['merge']}")
-    print(f"Shuffle:         {sim['shuffle_mode']}")                                                  
-    print(f"Warmup count:    {sim['warmup_count']}")
-    print()                                                                                           
-                                                                                                    
-    run_dir = make_run_dir()
-    print(f"Run directory: {run_dir}")                                                                
-    print()     
 
-    start_time = time.time()
+def _resolve_channels(config: dict) -> list[int]:
+    """Read explicit `channels` list, or fall back to legacy `n_nodes`."""
+    channels = config.get("channels")
+    if channels is None:
+        n_nodes = config.get("n_nodes")
+        if n_nodes is None:
+            raise ValueError("config must provide either 'channels' or 'n_nodes'")
+        channels = list(range(n_nodes))
 
-    # Auto-run split_data if splits dir for this SNR doesn't exist                                    
+    if not isinstance(channels, list) or not channels:
+        raise ValueError(f"channels must be a non-empty list, got {channels!r}")
+    if len(channels) > 8:
+        raise ValueError(f"channels may have at most 8 entries, got {len(channels)}")
+    if any((not isinstance(c, int)) or c < 0 or c > 7 for c in channels):
+        raise ValueError(f"every channel must be an int in 0..7, got {channels!r}")
+    if len(set(channels)) != len(channels):
+        raise ValueError(f"channels must be unique, got {channels!r}")
+    return channels
+
+
+# ── Build nodes + groups ────────────────────────────────────────────────
+
+def build_nodes_and_groups(
+    config: dict,
+) -> tuple[dict[str, list[Node]], dict[str, list[Group]]]:
+    """Flat construction of all nodes and (if len(channels) > 1) their groups."""
+    data         = config["data"]
+    gmm_cfg      = config["gmm"]
+    sim_cfg      = config["simulation"]
+    channels     = _resolve_channels(config)
+    temp         = config["temperature"]
+    manual_reset = sim_cfg.get("manual_reset", False)
+
+    nodes_by_type:  dict[str, list[Node]]  = {mt: [] for mt in data["machine_types"]}
+    groups_by_type: dict[str, list[Group]] = {mt: [] for mt in data["machine_types"]}
+
+    for mtype in data["machine_types"]:
+        for mid in data["machine_ids"]:
+            machine_nodes = [
+                Node(
+                    node_id       = f"{mtype}_{mid}_ch{ch}",
+                    machine_type  = mtype,
+                    machine_id    = mid,
+                    channel       = ch,
+                    n_mels        = gmm_cfg["n_mels"],
+                    n_components  = gmm_cfg["n_components"],
+                    cusum_h_sigma = gmm_cfg["cusum_h_sigma"],
+                    cusum_h_floor = gmm_cfg["cusum_h_floor"],
+                    seed          = gmm_cfg["seed"],
+                    manual_reset  = manual_reset,
+                )
+                for ch in channels
+            ]
+            nodes_by_type[mtype].extend(machine_nodes)
+
+            if len(channels) > 1:
+                groups_by_type[mtype].append(Group(
+                    machine_type  = mtype,
+                    machine_id    = mid,
+                    nodes         = machine_nodes,
+                    temperature   = temp,
+                    cusum_h_sigma = gmm_cfg["cusum_h_sigma"],
+                    cusum_h_floor = gmm_cfg["cusum_h_floor"],
+                    manual_reset  = manual_reset,
+                ))
+
+    return nodes_by_type, groups_by_type
+
+
+# ── Orchestration ────────────────────────────────────────────────────────
+
+def run_with_config(
+    config:         dict,
+    config_path:    Path | None = None,
+    save_artefacts: bool        = True,
+    verbose_steps:  bool        = True,
+) -> dict:
+    """Run one simulation from an in-memory config dict.
+
+    Parameters
+    ----------
+    config : dict
+        Resolved-or-not config; this function calls _resolve_snr() so paths
+        with {snr} placeholders get expanded in place.  Idempotent.
+    config_path : Path | None
+        Original config path, used only by save_results for provenance.
+    save_artefacts : bool
+        If False, skips run_dir, results.json, plots, latent plots.
+    verbose_steps : bool
+        If False, suppresses the per-step format_step print and print_results.
+
+    Returns
+    -------
+    dict with keys: nodes_by_type, groups_by_type, runtime_seconds, run_dir.
+    """
+    sim      = config["simulation"]
+    data     = config["data"]
+    snr      = _resolve_snr(config)
+    channels = _resolve_channels(config)
+    config["channels"] = channels   # normalise so downstream sees a canonical list
+
+    if verbose_steps:
+        print(f"SNR:        {snr}")
+        print(f"Channels:   {channels}  (n={len(channels)})")
+        print(f"GMM:        n_mels={config['gmm']['n_mels']}"
+              f"  n_components={config['gmm']['n_components']}")
+        print(f"Fusion T:   {config['temperature']}")
+        print(f"Shuffle:    {sim['shuffle_mode']}")
+        print(f"Warmup:     {sim['warmup_count']}")
+        print()
+
+    run_dir = make_run_dir() if save_artefacts else None
+    if run_dir is not None and verbose_steps:
+        print(f"Run directory: {run_dir}\n")
+
+    start = time.time()
+
+    # Auto-split if splits dir is missing.
     splits_dir = Path(data["splits_dir"])
-    if not splits_dir.exists():                                                                       
-        print(f"\nSplits dir missing: {splits_dir}")                                                  
+    if not splits_dir.exists():
+        print(f"Splits dir missing: {splits_dir}")
         print(f"Running split_data for snr={snr}...")
-        from simulation.data.split_data import split_data                                             
-        try:                                                                                          
+        from simulation.data.split_data import split_data
+        try:
             split_data(
-                mimii_root=Path(data["mimii_root"]),                                                  
+                mimii_root=Path(data["mimii_root"]),
                 splits_dir=splits_dir,
                 machine_types=data["machine_types"],
-            )                                                                                         
+            )
         except FileNotFoundError as e:
-            raise FileNotFoundError(                                                                  
+            raise FileNotFoundError(
                 f"Cannot auto-split: {e}\n"
-                f"Raw MIMII data for snr={snr} is missing. "                                          
+                f"Raw MIMII data for snr={snr} is missing. "
                 f"Run: python data/download_mimii.py --snr {snr}"
-            ) from e                                                                                  
-                                                                                                    
-    # Load shuffled timelines from the split directories
-    timelines_by_type = load_all_timelines(                                                           
-        splits_dir=splits_dir,
-        machine_types=data["machine_types"],
-        machine_ids=data["machine_ids"],
-        warmup_count=sim["warmup_count"],                                                             
-        shuffle_mode=sim["shuffle_mode"],
-        seed=sim["seed"],                                                                             
-        block_size=sim.get("block_size", 5),                                                          
-        block_interval=sim.get("block_interval", 20),
-    )                                                                                                 
-                                                                                                    
-    # Build components and nodes
-    preprocessor, frozen_embedder, topology, merge = build_shared_components(config)                  
-    nodes_by_type = build_nodes(
-        config, preprocessor, frozen_embedder, topology, merge, timelines_by_type,
-    )                                                                                                 
+            ) from e
 
-    # Run lockstep                                                                                    
-    fed = config.get("federation", {})
-
-    print()
-    print("Legend:  · TN   ✓ TP   ✗ FN (missed)   ! FP (false alarm)")
-    print()                                                                                           
-
-    for result in lockstep.run(                                                                       
-        nodes_by_type,
-        timelines_by_type,                                                                            
-        federation_enabled=fed.get("enabled", False),
-        federation_interval=fed.get("interval", 10),
-    ):                                                                                                
-        print(format_step(result, data["machine_types"]))
-                                                                                                    
-    print_results(
-        nodes_by_type,
-        state_enabled=state_enabled,
-        manual_reset=manual_reset,                                                                    
+    timelines_by_type = load_all_timelines(
+        splits_dir     = splits_dir,
+        machine_types  = data["machine_types"],
+        machine_ids    = data["machine_ids"],
+        warmup_count   = sim["warmup_count"],
+        shuffle_mode   = sim["shuffle_mode"],
+        seed           = sim["seed"],
+        block_size     = sim.get("block_size", 5),
+        block_interval = sim.get("block_interval", 20),
     )
-                                                                                                    
-    runtime_seconds = time.time() - start_time
 
-    print(f"\nSaving run artefacts to {run_dir}")                                                     
-    save_results(
-        nodes_by_type=nodes_by_type,                                                                  
-        config=config,
-        config_path=Path(config_path),                                                                
-        runtime_seconds=runtime_seconds,
-        run_dir=run_dir,                                                                              
-    )           
-    save_plots(                                                                                       
-        nodes_by_type=nodes_by_type,
-        config=config,                                                                                
-        run_dir=run_dir,
+    nodes_by_type, groups_by_type = build_nodes_and_groups(config)
+
+    if verbose_steps:
+        print("Legend:  · TN   ✓ TP   ✗ FN (missed)   ! FP (false alarm)\n")
+
+    for step in lockstep.run(nodes_by_type, groups_by_type, timelines_by_type):
+        if verbose_steps:
+            print(format_step(step, data["machine_types"]))
+
+    if verbose_steps:
+        print_results(nodes_by_type, groups_by_type)
+
+    runtime = time.time() - start
+
+    if save_artefacts:
+        print(f"\nSaving run artefacts to {run_dir}")
+        save_results(
+            nodes_by_type   = nodes_by_type,
+            groups_by_type  = groups_by_type,
+            config          = config,
+            config_path     = config_path,
+            runtime_seconds = runtime,
+            run_dir         = run_dir,
+        )
+        save_plots(
+            nodes_by_type   = nodes_by_type,
+            groups_by_type  = groups_by_type,
+            config          = config,
+            run_dir         = run_dir,
+        )
+        if config.get("latent_plot", {}).get("enabled", False):
+            save_latent_plots(
+                nodes_by_type     = nodes_by_type,
+                timelines_by_type = timelines_by_type,
+                config            = config,
+                run_dir           = run_dir,
+            )
+        print(f"Done.  Runtime: {runtime:.1f}s")
+
+    return {
+        "nodes_by_type":   nodes_by_type,
+        "groups_by_type":  groups_by_type,
+        "runtime_seconds": runtime,
+        "run_dir":         run_dir,
+    }
+
+
+# ── Main ─────────────────────────────────────────────────────────────────
+
+def main(config_path: str = "simulation/configs/default.yaml") -> None:
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+    print(f"Config:     {config_path}")
+    run_with_config(
+        config,
+        config_path    = Path(config_path),
+        save_artefacts = True,
+        verbose_steps  = True,
     )
-    save_latent_plots(
-        nodes_by_type=nodes_by_type,
-        timelines_by_type=timelines_by_type,                                                          
-        config=config,
-        run_dir=run_dir,                                                                              
-    )           
 
-    print(f"Done. Runtime: {runtime_seconds:.1f}s")
 
-                                                                                                    
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run lockstep simulation")                           
-    parser.add_argument(
-        "--config", default="simulation/configs/default.yaml",
+    p = argparse.ArgumentParser(description="Run lockstep simulation")
+    p.add_argument(
+        "--config",
+        default="simulation/configs/default.yaml",
         help="Path to simulation config YAML",
-    )                                                                                                 
-    args = parser.parse_args()
+    )
+    args = p.parse_args()
     main(config_path=args.config)

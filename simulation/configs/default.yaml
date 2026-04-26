@@ -1,129 +1,60 @@
-# ─────────────────────────────────────────────────────────────────────────────       
-# Simulation Configuration                                                            
-#                                                                                     
-# Top-level keys (preprocessor, frozen_embedder, separator, ...) are                  
-# SELECTORS. They name which implementation to use. The corresponding                 
-# named block (e.g. acoustic_encoder:) holds the parameters for that                  
-# implementation.                                                                     
-#                                                                                     
-# Switching pipelines = change the selector AND make sure the named
-# block exists. Unused blocks are ignored.                                            
-# ─────────────────────────────────────────────────────────────────────────────
-                                                                                      
-# ── Component selection ──────────────────────────────────────────────────────       
-preprocessor:    twfr        # log_mel | twfr | identity                           
-frozen_embedder: identity   # acoustic_encoder | identity                     
-separator:       gmm            # svdd | gmm | identity                              
-topology:        isolated        # isolated | fully_connected                         
-merge:           none            # none | soft_param                                  
-                                                                                      
-# ── Frozen embedder configs ──────────────────────────────────────────────────       
-# Each block is the full set of params needed for that embedder.                      
-# Audio params live here because they're tied to the embedder's training.             
-                                                                                      
-acoustic_encoder:                                                                     
-  checkpoint:    distillation/outputs/student/acoustic_encoder.pt                     
-  latent_dim:    32              # output dimension — propagates to separator         
-  sample_rate:   16000                                                                
-  frame_seconds: 0.975           # YAMNet's hardcoded frame size                      
-  n_mels:        64                                                                   
-  n_fft:         1024
-  hop_length:    256                                                                  
-  center:        true            # librosa padding mode
-                                                                                      
-identity_embedder:
-  latent_dim:    128             # TWFR feature dim (for GMM pipeline)                
-  sample_rate:   16000                                                                
-  
-# ── Preprocessor configs ─────────────────────────────────────────────────────       
-# Inherit audio params from the active embedder block at runtime.
-# No params here unless preprocessor-specific.                                        
-                                                                                      
-log_mel: {}     # uses audio params from acoustic_encoder                             
-twfr:    {}     # uses audio params from identity_embedder                            
-                                                                                      
-# ── Separator configs ────────────────────────────────────────────────────────       
-# input_dim auto-set from the active embedder's latent_dim.
-                                                                                      
-svdd:           
-  hidden_dim:   32                                                                    
-  output_dim:   8
-  threshold_mode:       percentile    # percentile | max_margin | n_sigma
-  threshold_percentile: 95.0          # used when mode = percentile
-  threshold_margin:     0.0           # used when mode = max_margin (additive)
-  n_sigma:              3.0           # used when mode = n_sigma
-  holdout_fraction:     0.2 
-  lr:           0.01
-  weight_decay: 1.0e-4
-  epochs:       50                                                                    
-  batch_size:   32
-  seed:         42                                                                    
-                                                                                      
+# ═══════════════════════════════════════════════════════════════════════════
+# Simulation config — GMM-only, flat schema.
+# No selectors, no named blocks.  Every key is a direct parameter.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── Core node-learning knob ──────────────────────────────────────────────
+channels:    [0, 1, 2, 3, 4, 5]   # MIMII mic indices; 1..8 entries, 0..7 values.
+                      # len==1 ⇒ single-node run, no fusion.
+                      # len>1  ⇒ one Group per machine, softmax(-σ/T) fusion.
+temperature: 100.0    # Softmax temperature for fusion weights.
+                      # T=1   → hard selection (reproduces collapse bug).
+                      # T=100 → near-equal weights, small fit-quality bias.
+                      # T→∞   → exactly equal weights.
+
+# ── GMM / detector (all pass-through to gmm.detector.GMMDetector) ────────
 gmm:
-  n_components:   2                                                                   
-  # covariance_type: diag
-  threshold_mode:       n_sigma    # percentile | max_margin | n_sigma
-  threshold_percentile: 99.0          # used when mode = percentile
-  threshold_margin:     500.0           # used when mode = max_margin (additive)
-  n_sigma:              3.0           # used when mode = n_sigma
-  seed:            42
-                                                                                      
-identity_separator: {}
-                                                                                      
-# ── Topology configs ─────────────────────────────────────────────────────────       
-isolated: {}
-fully_connected: {}                                                                   
-                
-# ── Merge configs ────────────────────────────────────────────────────────────       
-none: {}
-                                                                                      
-soft_param:     
-  alpha: 0.5
+  n_mels:         64         # 32 / 64 / 128, mel filterbank resolution
+  n_components:   2          # GMM mixture components (K)
+  cusum_h_sigma:  5.0        # h = max(sigma * 5, cusum_h_floor); k = max(val_nlls)
+  cusum_h_floor:  1.0
+  seed:           42
 
-# ── Simulation parameters ────────────────────────────────────────────────────       
+# ── Simulation loop ──────────────────────────────────────────────────────
 simulation:
-  warmup_count:   40                                                                  
-  shuffle_mode:   block_fixed         # random | block_random | block_fixed
-  block_size:     5                                                                   
-  block_interval: 4
-  extract_mode:   precompute     # precompute | online                                
-  seed:           42   
-  state_enabled:  true                    # print block-level state metrics + render grid_state.png                                                                        
-  manual_reset:   true                    # circuit-breaker mode: hold alarm until engineer reset                                                                        
-                                                                            
-  
-# ── Federation ───────────────────────────────────────────────────────────────       
-federation:     
-  enabled:  false                                                                     
-  interval: 10                                                                        
-  
-# # ── Memory tracking ──────────────────────────────────────────────────────────       
-# memory:         
-#   analytical:      true                                                               
-#   python_tracking: false
+  warmup_count:    60           # 50 fit + 10 val (matches gmm/ N_FIT_CLIPS + N_VAL_CLIPS)
+  shuffle_mode:    block_fixed  # random | block_random | block_fixed
+  block_size:      10           # 10-clip blocks ≈ teammate's 3-round windows
+  block_interval:  10
+  manual_reset:    false        # circuit-breaker mode for the state layer.
+                                #   false ⇒ state == alarm per clip (auto-reset).
+                                #   true  ⇒ state latches at first alarm, cleared
+                                #           at anomaly→normal band boundary.
+  seed:            42
 
+# ── Plot hyperparameters ─────────────────────────────────────────────────
+plot:
+  show_per_node:           true    # draw all n node score traces (in groups)
+  show_fused:              true    # draw NL fused trace (when n>1)
+  show_cusum_accumulator:  true    # draw S_t line per node & group
+  show_k_and_h_lines:      true    # horizontal dashed lines at k and h
+  compare_node_idx:        0       # when n>1, which node to render in
+                                   # plots/compare_single/ for baseline comparison
 
-# ── Latent space plots ───────────────────────────────────────────────────────
-# Visualises each separator's latent space via t-SNE. Recomputes embeddings  
-# at plot time (does NOT capture them during the simulation), so memory           
-# accounting stays honest. Slow — adds ~1-2 min per run with 16 nodes.            
-latent_plot:                                                                      
-  enabled:      true                                                              
-  perplexity:   30        # t-SNE perplexity (5-50, default 30)                   
-  random_state: 42        # for reproducibility                                   
-  per_frame:    true      # render per-frame t-SNE panel                          
-  per_clip:     true      # render per-clip-max-frame t-SNE panel                 
-  histogram:    true      # render distance histogram panel   
+# ── Latent plots (t-SNE on TWFR features) ────────────────────────────────
+latent_plot:
+  enabled:       false
+  node_subset:   [0]              # which channel indices to t-SNE; [] = all.
+                                  # One folder per node under plots/latent/.
+  perplexity:    30
+  random_state:  42
 
+# ── SNR selection ────────────────────────────────────────────────────────
+snr: "-6dB"        # 6dB | 0dB | -6dB
 
-# ── SNR selection ────────────────────────────────────────────────────────────
-# Which MIMII SNR variant to run against. Must be one of: 6dB, 0dB, -6dB.
-# Resolved into data.mimii_root and data.splits_dir via {snr} placeholders.
-snr: 6dB
-
-# ── Data ─────────────────────────────────────────────────────────────────────
-data:                                                                                 
-  mimii_root:    data/mimii/{snr}
-  splits_dir:    simulation/data/splits/{snr}                                              
-  machine_types: [fan, pump, slider, valve]                                           
-  machine_ids:   [id_00, id_02, id_04, id_06]     
+# ── Data ─────────────────────────────────────────────────────────────────
+data:
+  mimii_root:    data/mimii_{snr}
+  splits_dir:    simulation/data/splits/{snr}
+  machine_types: [fan, pump, slider, valve]
+  machine_ids:   [id_00, id_02, id_04, id_06]

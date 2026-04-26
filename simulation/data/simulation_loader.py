@@ -2,12 +2,13 @@
 """Load split data and build shuffled timelines for the lockstep simulation.
 
 Reads from the directory structure produced by split_data.py:
-    simulation/data/splits/{machine_type}/{machine_id}/warmup/*.wav
-    simulation/data/splits/{machine_type}/{machine_id}/test_normal/*.wav
-    simulation/data/splits/{machine_type}/{machine_id}/test_abnormal/*.wav
+    simulation/data/splits/{snr}/{machine_type}/{machine_id}/warmup/*.wav
+    simulation/data/splits/{snr}/{machine_type}/{machine_id}/test_normal/*.wav
+    simulation/data/splits/{snr}/{machine_type}/{machine_id}/test_abnormal/*.wav
 
-Builds a timeline per node — an ordered list of (wav_path, label) pairs
-that the lockstep trainer iterates through one timestep at a time.
+Builds a timeline per machine: an ordered list of (wav_path, label) pairs that
+the lockstep trainer iterates through one timestep at a time. The same
+timeline is shared by every channel of the same (machine_type, machine_id).
 """
 
 from dataclasses import dataclass 
