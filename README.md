@@ -1,6 +1,6 @@
 # tinyGUARD
 
-tinyGUARD is an industrial machine anomaly detection system that runs
+tinyGUARD (Tiny Gaussian Unsupervised Anomaly Recognition Device) is an industrial machine anomaly detection system that runs
 end-to-end on a microcontroller with as little as 256 KB of SRAM and 1 MB
 of flash. It listens to a machine through a microphone, learns what normal
 operation sounds like during a 10-minute warm-up, and then flags abnormal
