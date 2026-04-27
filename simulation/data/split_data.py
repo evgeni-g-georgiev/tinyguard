@@ -31,6 +31,7 @@ this CLI is an escape hatch):
 
 from dataclasses import dataclass
 from pathlib import Path
+import random
 import shutil
 import argparse
 import os
@@ -124,63 +125,73 @@ def plan_node_split(
     sources: NodeSources,
     min_abnormal: int,
     max_warmup: int,
-) -> NodeSplitPlan:                                                                   
+    rng: random.Random,
+) -> NodeSplitPlan:
     """Assign every file in a node to exactly one bucket.
-                                                                                    
-    Allocation order for NORMAL files (from the sorted list):                         
-        1. Last max_warmup files           → warmup                                   
-        2. Next-to-last min_abnormal files → test_normal                              
-                
-    Allocation order for ABNORMAL files (from the sorted list):                       
-        1. First min_abnormal files → test_abnormal
-        2. Remaining files          → surplus_abnormal                                
 
-    Args:                                                                             
+    Files are shuffled with the provided RNG before slicing. This embodies
+    the stationarity assumption: every normal clip is an IID draw from one
+    fixed distribution, so val and test_normal must be sampled randomly
+    rather than carved out of distinct time chunks of the recording.
+
+    Allocation order for NORMAL files (after shuffle):
+        1. Last max_warmup files           → warmup
+        2. Next-to-last min_abnormal files → test_normal
+
+    Allocation order for ABNORMAL files (after shuffle):
+        1. First min_abnormal files → test_abnormal
+        2. Remaining files          → surplus_abnormal
+
+    Args:
         sources: All files for this node.
         min_abnormal: Uniform count for test_normal and test_abnormal.
-        max_warmup: Number of normal files reserved for warmup.                       
-                                                                                    
-    Returns:                                                                          
-        A NodeSplitPlan with every file assigned to exactly one bucket.               
-    """         
-    normal = sources.normal_files
-    abnormal = sources.abnormal_files                                                 
+        max_warmup: Number of normal files reserved for warmup.
+        rng: Seeded RNG for reproducible shuffling.
 
-    # ── Abnormal Allocation ────────────────────────────────────────────────────────                                                           
-    test_abnormal = abnormal[:min_abnormal]
-    surplus_abnormal = abnormal[min_abnormal:]                                        
+    Returns:
+        A NodeSplitPlan with every file assigned to exactly one bucket.
+    """
+    normal = list(sources.normal_files)
+    abnormal = list(sources.abnormal_files)
+    rng.shuffle(normal)
+    rng.shuffle(abnormal)
 
-    # ── Normal Allocation ────────────────────────────────────────────────────────                                       
-    warmup = normal[-max_warmup:]
-    test_normal = normal[-(max_warmup + min_abnormal):-max_warmup]                    
+    # ── Abnormal Allocation ────────────────────────────────────────────────────────
+    test_abnormal = tuple(abnormal[:min_abnormal])
+    surplus_abnormal = tuple(abnormal[min_abnormal:])
 
-    return NodeSplitPlan(                                                             
+    # ── Normal Allocation ────────────────────────────────────────────────────────
+    warmup = tuple(normal[-max_warmup:])
+    test_normal = tuple(normal[-(max_warmup + min_abnormal):-max_warmup])
+
+    return NodeSplitPlan(
         machine_type=sources.machine_type,
-        machine_id=sources.machine_id,                                                
+        machine_id=sources.machine_id,
         warmup=warmup,
         test_normal=test_normal,
         test_abnormal=test_abnormal,
         surplus_abnormal=surplus_abnormal,
-    )       
+    )
 
                                                                                         
 def plan_all_splits(
     manifests: list[NodeSources],
+    rng: random.Random,
 ) -> tuple[list[NodeSplitPlan], int, int]:
-    """Plan the full split for all nodes.                                             
+    """Plan the full split for all nodes.
 
-    Returns:                                                                          
+    Returns:
         (plans, min_abnormal, max_warmup) so the caller can log
-        the computed counts.                                                          
+        the computed counts.
     """
-    min_abnormal = compute_min_abnormal(manifests)                                    
-    max_warmup = compute_max_warmup(manifests, min_abnormal)                          
+    min_abnormal = compute_min_abnormal(manifests)
+    max_warmup = compute_max_warmup(manifests, min_abnormal)
 
-    plans = [                                                                         
-        plan_node_split(m, min_abnormal, max_warmup)
-        for m in manifests                                                            
+    plans = [
+        plan_node_split(m, min_abnormal, max_warmup, rng)
+        for m in manifests
     ]
-    return plans, min_abnormal, max_warmup  
+    return plans, min_abnormal, max_warmup
 
 # ── Filesystem Interaction ────────────────────────────────────────────────────────
 def discover_sources(
@@ -260,42 +271,49 @@ def clean_previous_splits(splits_dir: Path) -> None:
         shutil.rmtree(splits_dir)        
 
 # ── Splitting the Data  ────────────────────────────────────────────────────────
-def split_data( 
+def split_data(
     mimii_root: Path,
     splits_dir: Path,
     machine_types: list[str],
+    seed: int = 42,
 ) -> None:
     """Execute the full data splitting pipeline.
-                                                                                    
+
+    Normal and abnormal pools are shuffled with a seeded RNG before slicing
+    so val and test_normal are IID samples from the same distribution
+    (stationarity assumption — see plan_node_split).
+
     Steps:
-        1. Clean previous splits                                                      
+        1. Clean previous splits
         2. Discover all node manifests
         3. Plan the split (pure logic, no IO)
-        4. Execute the plan (copy files)                                              
+        4. Execute the plan (copy files)
     """
-    print("Step 1/4: Cleaning previous splits")                                       
-    clean_previous_splits(splits_dir)                                                 
+    rng = random.Random(seed)
 
-    print("Step 2/4: Discovering file manifests")                                     
+    print("Step 1/4: Cleaning previous splits")
+    clean_previous_splits(splits_dir)
+
+    print("Step 2/4: Discovering file manifests")
     manifests = discover_sources(mimii_root, machine_types)
-    print(f"  Found {len(manifests)} nodes")                                          
+    print(f"  Found {len(manifests)} nodes")
 
-    for m in manifests:                                                               
+    for m in manifests:
         print(f"    {m.machine_type}/{m.machine_id}: "
-            f"{len(m.normal_files)} normal, {len(m.abnormal_files)} abnormal")      
+            f"{len(m.normal_files)} normal, {len(m.abnormal_files)} abnormal")
 
-    print("Step 3/4: Planning splits")                                                
-    plans, min_abnormal, max_warmup = plan_all_splits(manifests)
-    print(f"  test_normal per node:    {min_abnormal}")                               
-    print(f"  test_abnormal per node:  {min_abnormal}")                               
-    print(f"  max warmup per node:     {max_warmup}")                                 
-                                                                                    
-    print("Step 4/4: Executing splits (copying files)")                               
+    print(f"Step 3/4: Planning splits (seed={seed})")
+    plans, min_abnormal, max_warmup = plan_all_splits(manifests, rng)
+    print(f"  test_normal per node:    {min_abnormal}")
+    print(f"  test_abnormal per node:  {min_abnormal}")
+    print(f"  max warmup per node:     {max_warmup}")
+
+    print("Step 4/4: Executing splits (copying files)")
     for plan in plans:
-        print(f"  Copying {plan.machine_type}/{plan.machine_id}")                     
-        execute_split(plan, splits_dir)                                               
+        print(f"  Copying {plan.machine_type}/{plan.machine_id}")
+        execute_split(plan, splits_dir)
 
-    print("Done.")    
+    print("Done.")
 
                                                                                         
 # Display SNR ("-6dB") to on-disk MIMII suffix ("neg6db"). Mirrors
@@ -328,6 +346,10 @@ def main():
         default=["fan", "pump", "slider", "valve"],
         help="Machine types to include",
     )
+    parser.add_argument(
+        "--seed", type=int, default=42,
+        help="RNG seed for shuffling the normal/abnormal pools.",
+    )
     args = parser.parse_args()
 
     mimii_root = (
@@ -341,11 +363,12 @@ def main():
     print(f"  mimii_root: {mimii_root}")                                        
     print(f"  splits_dir: {splits_dir}")  
                                                                                     
-    split_data( 
+    split_data(
         mimii_root=mimii_root,
         splits_dir=splits_dir,
         machine_types=args.machine_types,
-    )                                                                                 
+        seed=args.seed,
+    )
 
                                                                                     
 if __name__ == "__main__":

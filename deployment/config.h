@@ -43,7 +43,7 @@
 // ── Detection ────────────────────────────────────────────────────────────────
 // CUSUM reference k is set to max(val_nlls) at calibration time, so it has no
 // separate hyperparameter.
-#define CUSUM_H_SIGMA   5.0f
+#define CUSUM_H_SIGMA   20.0f
 #define CUSUM_H_FLOOR   1.0f
 
 // ── Node Learning ────────────────────────────────────────────────────────────

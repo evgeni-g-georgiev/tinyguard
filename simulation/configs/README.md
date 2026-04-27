@@ -31,7 +31,7 @@ Passed straight to `gmm.detector.GMMDetector`:
 gmm:
   n_mels:        64           # 32 / 64 / 128
   n_components:  2
-  cusum_h_sigma: 5.0          # h = max(sigma_val * 5, cusum_h_floor); k = max(val_nlls)
+  cusum_h_sigma: 20.0         # h = max(sigma_val * 20, cusum_h_floor); k = max(val_nlls)
   cusum_h_floor: 1.0
   seed:          42
 ```
@@ -41,7 +41,7 @@ gmm:
 ```yaml
 simulation:
   warmup_count:    60           # 50 fit + 10 val (matches gmm/ defaults)
-  shuffle_mode:    block_fixed  # random | block_random | block_fixed
+  shuffle_mode:    block_fixed  # random | block_random | block_fixed | rounds
   block_size:      10           # anomaly clips per block (block modes)
   block_interval:  10           # normal clips between blocks (block_fixed)
   manual_reset:    false        # if true, alarms latch until anomaly->normal boundary

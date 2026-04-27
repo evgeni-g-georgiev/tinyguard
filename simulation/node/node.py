@@ -30,7 +30,7 @@ class Node:
     # GMM / detector hyperparameters (passthrough to GMMDetector)
     n_mels:        int
     n_components:  int   = 2
-    cusum_h_sigma: float = 5.0
+    cusum_h_sigma: float = 20.0
     cusum_h_floor: float = 1.0
     seed:          int   = 42
 

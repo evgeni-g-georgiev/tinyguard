@@ -15,9 +15,10 @@ import numpy as np
 
 from simulation.lockstep   import TimestepResult                                      
 from simulation.metrics    import (
-    ClipMetrics, BlockMetrics,                                                        
+    ClipMetrics, BlockMetrics,
+    clip_metrics, block_metrics,
     node_clip_metrics, node_block_metrics,
-    group_clip_metrics, group_block_metrics,                                          
+    group_clip_metrics, group_block_metrics,
 )
 from simulation.node.node  import Node                                                
 from simulation.node.group import Group                                               
@@ -234,8 +235,219 @@ def result_lines(
                 
                                                                                     
 def print_results(
-    nodes_by_type:  dict[str, list[Node]],                                            
+    nodes_by_type:  dict[str, list[Node]],
     groups_by_type: dict[str, list[Group]],
 ) -> None:
     for line in result_lines(nodes_by_type, groups_by_type):
+        print(line)
+
+
+# ── Baseline summary table (terminal-only) ───────────────────────────────
+#
+# Compact paper-style summary printed at the very end of a run so the
+# headline numbers are easy to copy into a report. Reads from the same
+# per-node clip / block metrics the main results section uses, but
+# aggregates per machine type and emits a fixed-width table.
+
+_DISPLAY_NAMES = {
+    "fan":    "Fan",
+    "valve":  "Valve",
+    "pump":   "Pump",
+    "slider": "Slide rail",
+}
+
+_BL_LABEL_W   = 12   # "Slide rail" fits in 10
+_BL_NUM_W     = 7    # " 0.075 ", "  —   "
+_BL_DELAY_W   = 8    # "  0.0  "
+_BL_AUC_W     = 7    # "0.9962"
+_BL_PREC_W    = 9    # "  0.992  "
+
+
+def _bl_cell(val, places: int = 3, width: int = _BL_NUM_W) -> str:
+    """Centre a numeric metric in `width` chars; render `None` as an em dash."""
+    if val is None:
+        return "—".center(width)
+    return f"{val:.{places}f}".center(width)
+
+
+def _bl_combine(
+    clips:  list[ClipMetrics  | None],
+    blocks: list[BlockMetrics | None],
+) -> dict:
+    """Mean of each table column across an iterable of (clip, block) pairs.
+
+    Shared by the single-node and fused-group aggregators so both views fill
+    the same row schema.
+    """
+    def _mean_or_none(xs):
+        xs = [x for x in xs if x is not None]
+        return float(np.mean(xs)) if xs else None
+
+    valid_clip  = [m for m in clips  if m is not None]
+    valid_block = [m for m in blocks if m is not None]
+
+    fa_rates = []
+    for m in valid_block:
+        denom = m.block_fp + m.block_tn
+        if denom > 0:
+            fa_rates.append(m.block_fp / denom)
+
+    return {
+        "det_rate":  _mean_or_none([m.block_recall for m in valid_block]),
+        "fa_rate":   _mean_or_none(fa_rates),
+        "det_delay": _mean_or_none([m.mean_lag     for m in valid_block]),
+        "auc":       _mean_or_none([m.auc          for m in valid_clip]),
+        "recall":    _mean_or_none([m.recall       for m in valid_clip]),
+        "precision": _mean_or_none([m.precision    for m in valid_clip]),
+        "f1":        _mean_or_none([m.f1           for m in valid_clip]),
+    }
+
+
+def _bl_aggregate_node(nodes: list[Node], channel: int) -> dict | None:
+    """Per-type aggregate from one channel's per-node metrics."""
+    ch_nodes = [n for n in nodes if n.channel == channel]
+    if not ch_nodes:
+        return None
+    clips  = [node_clip_metrics(n)  for n in ch_nodes]
+    blocks = [node_block_metrics(n) for n in ch_nodes]
+    return _bl_combine(clips, blocks)
+
+
+def _bl_aggregate_group(groups: list[Group]) -> dict | None:
+    """Per-type aggregate from per-machine fused group metrics.
+
+    Uses g.alarms for clip metrics (per-clip CUSUM fires) and g.state for
+    block metrics (operator-facing flag trace). Mirrors the per-node
+    convention; under manual_reset=False both signals coincide.
+    """
+    if not groups:
+        return None
+    clips  = [clip_metrics(g.labels, g.fused_scores, g.alarms) for g in groups]
+    blocks = [block_metrics(g.labels, g.state)                 for g in groups]
+    return _bl_combine(clips, blocks)
+
+
+def _bl_row(label: str, r: dict) -> str:
+    """One body row of the baseline table."""
+    return (
+        f"  {label:<{_BL_LABEL_W}} │ "
+        f"{_bl_cell(r['det_rate'],  places=3)} │ "
+        f"{_bl_cell(r['fa_rate'],   places=3)} │ "
+        f"{_bl_cell(r['det_delay'], places=1, width=_BL_DELAY_W)} │ "
+        f"{_bl_cell(r['auc'],       places=4, width=_BL_AUC_W)} │ "
+        f"{_bl_cell(r['recall'],    places=3)} │ "
+        f"{_bl_cell(r['precision'], places=3, width=_BL_PREC_W)} │ "
+        f"{_bl_cell(r['f1'],        places=3)}"
+    )
+
+
+def _baseline_table_lines(
+    nodes_by_type:  dict[str, list[Node]],
+    groups_by_type: dict[str, list[Group]],
+    config:         dict,
+) -> list[str]:
+    """Render the baseline table as a list of lines.
+
+    With one configured channel the rows show per-node metrics for that
+    channel. With more than one channel the rows show per-machine fused
+    group metrics, which is the headline number node learning produces.
+    """
+    channels = config.get("channels") or [0]
+    snr      = config.get("snr", "?")
+    machine_types = config.get("data", {}).get(
+        "machine_types", list(nodes_by_type)
+    )
+
+    snr_label = f"{snr.replace('dB', ' dB')} SNR"
+
+    use_fused = len(channels) > 1 and any(
+        groups_by_type.get(mt) for mt in machine_types
+    )
+    view_label = (
+        f"fused, n={len(channels)}" if use_fused
+        else f"channel {channels[0]}"
+    )
+
+    rows: list[tuple[str, dict]] = []
+    for mt in machine_types:
+        if use_fused:
+            agg = _bl_aggregate_group(groups_by_type.get(mt, []))
+        else:
+            if mt not in nodes_by_type:
+                continue
+            agg = _bl_aggregate_node(nodes_by_type[mt], channels[0])
+        if agg is not None:
+            rows.append((_DISPLAY_NAMES.get(mt, mt.capitalize()), agg))
+
+    if not rows:
+        return [
+            "",
+            f"  (no data for view '{view_label}'; baseline table skipped)",
+            "",
+        ]
+
+    # Average across machine types.
+    def _avg(key):
+        vals = [r[key] for _, r in rows if r[key] is not None]
+        return float(np.mean(vals)) if vals else None
+
+    avg_row = {
+        k: _avg(k)
+        for k in ("det_rate", "fa_rate", "det_delay",
+                  "auc", "recall", "precision", "f1")
+    }
+
+    # Header construction. Two-tier: spanning groups on top, columns below.
+    # Compute total inner width consumed by each metric group so the upper
+    # banner can be centred over its sub-columns.
+    sep = " │ "
+    epi_inner = _BL_NUM_W + len(sep) + _BL_NUM_W + len(sep) + _BL_DELAY_W
+    clip_inner = (_BL_AUC_W + len(sep) + _BL_NUM_W + len(sep)
+                  + _BL_PREC_W + len(sep) + _BL_NUM_W)
+
+    label_pad = " " * (2 + _BL_LABEL_W + 1)   # "  Setting       "
+    epi_banner  = "Episode-level metrics".center(epi_inner)
+    clip_banner = "Clip-level metrics".center(clip_inner)
+    hdr_top = f"{label_pad}│ {epi_banner} │ {clip_banner}"
+
+    hdr_bot = (
+        f"  {'Setting':<{_BL_LABEL_W}} │ "
+        f"{'Det.rate'.center(_BL_NUM_W)} │ "
+        f"{'FA rate'.center(_BL_NUM_W)} │ "
+        f"{'Det.delay'.center(_BL_DELAY_W)} │ "
+        f"{'AUC'.center(_BL_AUC_W)} │ "
+        f"{'Recall'.center(_BL_NUM_W)} │ "
+        f"{'Precision'.center(_BL_PREC_W)} │ "
+        f"{'F1'.center(_BL_NUM_W)}"
+    )
+
+    rule = "─" * len(hdr_bot)
+
+    out: list[str] = []
+    out.append("")
+    out.append(rule)
+    out.append(
+        f"  Baseline evaluation results by machine type ({view_label})"
+    )
+    out.append(rule)
+    out.append(hdr_top)
+    out.append(hdr_bot)
+    out.append(rule)
+    out.append(f"  {snr_label}")
+    for label, r in rows:
+        out.append(_bl_row(label, r))
+    out.append(rule)
+    out.append(_bl_row("Average", avg_row))
+    out.append(rule)
+    out.append("")
+    return out
+
+
+def print_baseline_table(
+    nodes_by_type:  dict[str, list[Node]],
+    groups_by_type: dict[str, list[Group]],
+    config:         dict,
+) -> None:
+    """Terminal-only paper-style summary table; not written to summary.txt."""
+    for line in _baseline_table_lines(nodes_by_type, groups_by_type, config):
         print(line)

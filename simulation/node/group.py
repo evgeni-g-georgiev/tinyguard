@@ -43,7 +43,7 @@ class Group:
     machine_id:    str
     nodes:         list[Node]
     temperature:   float = 100.0
-    cusum_h_sigma: float = 5.0
+    cusum_h_sigma: float = 20.0
     cusum_h_floor: float = 1.0
     manual_reset:  bool  = False
                                                                                                                                 
