@@ -77,12 +77,16 @@ conda create -n tinyguard python=3.10 -y
 conda activate tinyguard
 ```
 
-Install the Python dependencies and the system tools the downloader needs:
+Install the Python dependencies:
 
 ```bash
 pip install -r requirements.txt
-# wget and unzip must be on PATH:
-#   macOS:          brew install wget
+```
+
+The downloader also needs `wget` and `unzip` on PATH. On macOS:
+
+```bash
+brew install wget
 ```
 
 To download MIMII dataset:
