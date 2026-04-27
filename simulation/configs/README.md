@@ -56,7 +56,9 @@ plot:
   show_fused:              true   # fused trace on group plots
   show_cusum_accumulator:  true   # S_t line on per-node and group plots
   show_k_and_h_lines:      true   # k and h reference lines
-  compare_node_idx:        0      # which channel to render in compare_single/
+  compare_node_idx:        0      # 0-based index into `channels` selecting
+                                  # which node to render in compare_single/
+                                  # (e.g. channels=[0, 4], idx=1 picks ch4)
 
 latent_plot:
   enabled:      false             # t-SNE; slow

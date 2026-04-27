@@ -472,9 +472,12 @@ def save_plots(
         title = f"{sep_desc}  |  single-node across all machines"                     
     _render_grid(primary_views, config, plots_dir / "grid.png", title)
                                                                                     
-    # Compare-single (baseline) views when n_nodes > 1                                
-    if has_groups:                                                                    
-        idx = config.get("plot", {}).get("compare_node_idx", 0)                       
+    # Compare-single (baseline) views when n_nodes > 1.
+    # idx is a 0-based index into the configured `channels` list, NOT a mic
+    # channel id (e.g. with channels=[0, 4], idx=1 selects mic channel 4).
+    if has_groups:
+        idx = config.get("plot", {}).get("compare_node_idx", 0)
+
                                                                                     
         # Grid view
         compare_views: list[tuple[str, object]] = []                                  

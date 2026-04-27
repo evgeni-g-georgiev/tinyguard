@@ -6,8 +6,7 @@ Block-level: treat per-clip alarms as a 0/1 state trace → block confusion plus
             mean detection lag and mean "unflag" lag.                                
                                                                                     
 CUSUM is always in auto-reset mode (alarm → accumulator reset), so                    
-mean_unflag is always populated when any block was detected — there's no              
-manual_reset distinction.                                                             
+mean_unflag is always populated when any block was detected.                             
                                                                                     
 All functions are pure: take (labels, scores, alarms), return a dataclass.            
 """                                                                                   
@@ -149,6 +148,6 @@ node.alarms)
 def node_block_metrics(node):  return block_metrics(node.labels,                      
 node.state)                                                                          
 def group_clip_metrics(g):     return clip_metrics(g.labels,    g.fused_scores,
-g.state)                                                                             
+g.alarms)                                                                             
 def group_block_metrics(g):    return block_metrics(g.labels,
-g.alarms) 
+g.state) 
