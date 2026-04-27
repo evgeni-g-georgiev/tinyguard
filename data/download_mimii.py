@@ -151,7 +151,7 @@ def main() -> None:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        "--snr", choices=list(SNR_TO_ROOT), default="-6dB",
+        "--snr", choices=list(SNR_TO_ROOT), default="6dB",
         help="Which MIMII SNR variant to download.",
     )
     args = parser.parse_args()
