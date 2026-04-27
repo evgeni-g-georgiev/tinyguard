@@ -67,21 +67,6 @@ During MONITOR each clip prints one line per board:
 [A] score=512.884  rolling=241.318  S=325.561  S_fused=1.84  *** FUSED ANOMALY ***
 ```
 
-## Memory budget
-
-With the defaults in `config.h` (`N_MELS=64`, `N_FRAMES=312`,
-`N_R_CANDIDATES=4`, `N_TRAIN_CLIPS=60`):
-
-```
-features[4][60][64]  = 60 KB
-mel_buf[64][312]     = 78 KB
-FFT scratch          = 12 KB
-GMM state + misc     = negligible
-```
-
-That leaves enough headroom on the Nano 33 BLE Sense Rev 2's 256 KB SRAM
-for the BLE stack and runtime overhead.
-
 ## File reference
 
 | File | Purpose |

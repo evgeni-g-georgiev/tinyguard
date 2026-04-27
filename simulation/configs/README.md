@@ -74,7 +74,7 @@ on-disk directory name (`-6dB` -> `neg6db`, `0dB` -> `0db`, `6dB` -> `6db`),
 which is why the raw MIMII directories use the suffix form.
 
 ```yaml
-snr: "-6dB"                     # 6dB | 0dB | -6dB
+snr: "6dB"                      # 6dB | 0dB | -6dB
 data:
   mimii_root:    data/mimii_{snr}
   splits_dir:    simulation/data/splits/{snr}
@@ -90,8 +90,3 @@ a contiguous run of anomalous clips, treated as a single event:
 - Clip level: AUC, precision, recall, F1.
 - Block level: detection rate, false-alarm rate, mean detection delay, mean
   unflag time.
-
-## Backward compatibility
-
-Configs with `n_nodes: N` (instead of `channels: [...]`) still work. The
-loader treats it as `channels: [0, 1, ..., N-1]`.

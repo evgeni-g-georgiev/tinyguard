@@ -1,34 +1,19 @@
 # Python
 __pycache__/
 *.pyc
-*.pyo
-*.egg-info/
-
-# Virtual environment
-proj_env/
-group_env/
-tinyml_env/
-
-# Claude
-.claude/
 
 # OS
 .DS_Store
 
-# IDE
-.vscode/
-.idea/
+# ML caches (regenerable from raw data)
+preprocessing/outputs/
+distillation/outputs/
+*.npy
 
-# Large datasets (downloaded separately)
-/data/fsd50k/
-/data/mimii_neg6db/
-/data/mimii_0db/
-/data/mimii_6db/
-/data/archives/
-/data/tmp/
-/data/mimii/
+# Datasets (downloaded separately — see README)
+/data/
 
-# Output results
+# Outputs
 simulation/outputs/
 simulation/data/
 gmm/outputs/

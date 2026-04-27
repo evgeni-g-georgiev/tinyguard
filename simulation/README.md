@@ -24,7 +24,7 @@ delete `simulation/data/splits/<snr>/` and re-run, or invoke
 Two knobs cover most experiments:
 
 ```yaml
-snr:      "-6dB"          # 6dB | 0dB | -6dB
+snr:      "6dB"           # 6dB | 0dB | -6dB
 channels: [0, 4]          # one entry per node, mic indices 0..7
                           # 1 entry  -> single-node baseline
                           # >1 entry -> node learning

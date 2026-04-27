@@ -12,7 +12,7 @@ evaluates tinyGUARD across the MIMII dataset of industrial machine sounds,
 and a C++ port that runs on a pair of Arduino Nano 33 BLE Sense Rev 2
 boards exchanging confidence signals over Bluetooth LE.
 
-## Live Demo
+## Deployment Demo
 The image below redirects to a live video demonstration of tinyGUARD with two nodes around one fan. This includes: warm-up, BLE sync, normal and anomalous periods, and successful defaulting to single-node operation when one node is disconnected.
 
 [![tinyGUARD (tiny Gaussian Unsupervised Anomaly Recognition Device) - Live Demonstration](https://img.youtube.com/vi/D8IELthSQNI/maxresdefault.jpg)](https://www.youtube.com/watch?v=D8IELthSQNI)
@@ -47,7 +47,7 @@ exchange over BLE.
 
 The methodology and evaluation results are written up in the project report.
 
-## Layout
+## Repo Layout
 
 ```
 simulation/     Python evaluation framework on MIMII (1 to 8 nodes)
@@ -60,6 +60,23 @@ config.py       Path constants
 
 ## Getting started
 
+The Python code requires Python 3.8, 3.9, or 3.10. Create and activate an
+environment with one of the following before installing dependencies.
+
+Using venv:
+
+```bash
+python3.10 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+```
+
+Using conda:
+
+```bash
+conda create -n tinyguard python=3.10 -y
+conda activate tinyguard
+```
+
 Install the Python dependencies and the system tools the downloader needs:
 
 ```bash
@@ -68,13 +85,13 @@ pip install -r requirements.txt
 #   macOS:          brew install wget
 ```
 
-Download one SNR variant of MIMII (about 30 GB extracted per SNR):
+To download MIMII dataset:
 
 ```bash
-python data/download_mimii.py --snr 6dB     # also: 0dB, -6dB
+python data/download_mimii.py --snr 6dB
 ```
 
-Run the simulation. The first run for each SNR builds the warmup/test splits
+Run the simulation. The first run builds the warmup/test splits
 on its own.
 
 ```bash
@@ -82,11 +99,10 @@ python -m simulation.run_simulation
 ```
 
 Each run writes a timestamped folder under `simulation/outputs/runs/` with
-metrics, full traces, and timeline plots. To change the SNR or the set of
+metrics, full traces, and timeline plots. To change the set of
 microphone channels, edit `simulation/configs/default.yaml`:
 
 ```yaml
-snr: "-6dB"
 channels: [0, 4]    # one entry per node, mic indices 0..7
 ```
 
@@ -106,4 +122,4 @@ components, `r` chosen from `{0.5, 0.7, 0.9, 1.0}`.
 
 The probabilistic detector is inspired by the TWFR-GMM submission to
 DCASE 2023 (Guan et al.). The collaborative inference setup builds on the
-node learning paradigm of Kanjo & Aslanov (2026).
+node learning paradigm of Kanjo & Aslanov (2026). See project report for full citations.
