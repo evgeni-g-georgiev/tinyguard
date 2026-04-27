@@ -14,6 +14,7 @@ boards exchanging confidence signals over Bluetooth LE.
 
 ## Live Demo
 The image below redirects to a live video demonstration of tinyGUARD with two nodes around one fan. This includes: warm-up, BLE sync, normal and anomalous periods, and successful defaulting to single-node operation when one node is disconnected.
+
 [![tinyGUARD (tiny Gaussian Unsupervised Anomaly Recognition Device) - Live Demonstration](https://img.youtube.com/vi/D8IELthSQNI/maxresdefault.jpg)](https://www.youtube.com/watch?v=D8IELthSQNI)
 
 ## How it works
