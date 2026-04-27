@@ -63,7 +63,13 @@ config.py       Path constants
 The Python code requires Python 3.8, 3.9, or 3.10. Create and activate an
 environment with one of the following before installing dependencies.
 
-Using venv:
+Using venv. If `python3.10` is not on PATH, install it first. On macOS:
+
+```bash
+brew install python@3.10
+```
+
+Then:
 
 ```bash
 python3.10 -m venv .venv
